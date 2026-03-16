@@ -1,136 +1,290 @@
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-1. NODES & RELATIONSHIPS
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+================================================================================
+  PAPERGRAPH — COMPLETE SCHEMA REFERENCE  
+================================================================================
 
-    NODES
-    ------
-    Paper
-    Author
-    Section
-    Concept
-    Method
-    Dataset
-    Topic
+────────────────────────────────────────────────────────────────────────────────
+1.  NODES
+────────────────────────────────────────────────────────────────────────────────
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  Paper                                                                      │
+│  Dedup key : arxiv_id (primary)  |  title_normalized (fallback)             │
+├─────────────────┬──────────────┬────────────────────────────────────────────┤
+│  Property       │  Type        │  Notes                                     │
+├─────────────────┼──────────────┼────────────────────────────────────────────┤
+│  paper_id       │  string      │  same as arxiv_id, kept for clarity        │
+│  arxiv_id       │  string  *   │  UNIQUE — strip version suffix (v1, v2…)   │
+│  title          │  string      │                                            │
+│  title_norm     │  string      │  toLower(trim(title)) — fallback dedup     │
+│  abstract       │  string      │                                            │
+│  summary        │  string      │  2-3 sentence LLM-generated summary        │
+│  pdf_url        │  string      │                                            │
+│  published_date │  date        │  Neo4j date type                           │
+│  year           │  int         │                                            │
+│  category       │  string      │  e.g. cs.LG, cs.CR                         │
+│  stub           │  boolean     │  true = created from citation, not yet     │
+│                 │              │  ingested. Default: false                  │
+└─────────────────┴──────────────┴────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  Author                                                                     │
+│  Dedup key : orcid (primary)  |  name_normalized (fallback)                 │
+├─────────────────┬──────────────┬────────────────────────────────────────────┤
+│  Property       │  Type        │  Notes                                     │
+├─────────────────┼──────────────┼────────────────────────────────────────────┤
+│  author_id      │  string  *   │  randomUUID() on CREATE                    │
+│  name           │  string      │                                            │
+│  name_norm      │  string      │  toLower(trim(name))                       │
+│  orcid          │  string      │  UNIQUE, optional — primary dedup key      │
+│  affiliation    │  string      │  optional                                  │
+│  email          │  string      │  optional                                  │
+└─────────────────┴──────────────┴────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  Section                                                                    │
+│  Dedup key : section_id                                                     │
+├─────────────────┬──────────────┬────────────────────────────────────────────┤
+│  Property       │  Type        │  Notes                                     │
+├─────────────────┼──────────────┼────────────────────────────────────────────┤
+│  section_id     │  string  *   │  UNIQUE — format: "{arxiv_id}_s{order}"    │
+│  title          │  string      │                                            │
+│  content        │  string      │  entire section content                    │
+│  section_order  │  int         │  0-based position within paper             │
+│  embedding      │  vector      │  embedding                                 │
+│                 │              │  indexed via VECTOR INDEX section_embedding│
+└─────────────────┴──────────────┴────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  Concept                                                                    │
+│  Dedup key : name_norm                                                      │
+├─────────────────┬──────────────┬────────────────────────────────────────────┤
+│  Property       │  Type        │  Notes                                     │
+├─────────────────┼──────────────┼────────────────────────────────────────────┤
+│  concept_id     │  string  *   │  randomUUID() on CREATE                    │
+│  name           │  string      │                                            │
+│  name_norm      │  string      │  toLower(trim(name))                       │
+│  description    │  string      │  optional                                  │
+└─────────────────┴──────────────┴────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  Method                                                                     │
+│  Dedup key : name_norm                                                      │
+├─────────────────┬──────────────┬────────────────────────────────────────────┤
+│  Property       │  Type        │  Notes                                     │
+├─────────────────┼──────────────┼────────────────────────────────────────────┤
+│  method_id      │  string  *   │  randomUUID() on CREATE                    │
+│  name           │  string      │                                            │
+│  name_norm      │  string      │  toLower(trim(name))                       │
+│  category       │  string      │  optional — e.g. "deep learning"           │
+│  description    │  string      │  optional                                  │
+└─────────────────┴──────────────┴────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  Dataset                                                                    │
+│  Dedup key : name_norm                                                      │
+├─────────────────┬──────────────┬────────────────────────────────────────────┤
+│  Property       │  Type        │  Notes                                     │
+├─────────────────┼──────────────┼────────────────────────────────────────────┤
+│  dataset_id     │  string  *   │  randomUUID() on CREATE                    │
+│  name           │  string      │                                            │
+│  name_norm      │  string      │  toLower(trim(name))                       │
+│  description    │  string      │  optional                                  │
+│  url            │  string      │  optional                                  │
+└─────────────────┴──────────────┴────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  Topic                                                                      │
+│  Dedup key : name_norm                                                      │
+├─────────────────┬──────────────┬────────────────────────────────────────────┤
+│  Property       │  Type        │  Notes                                     │
+├─────────────────┼──────────────┼────────────────────────────────────────────┤
+│  topic_id       │  string  *   │  randomUUID() on CREATE                    │
+│  name           │  string      │                                            |
+│  name_norm      │  string      │  toLower(trim(name))                       │
+│  domain         │  string      │  optional — e.g. "nlp", "cybersecurity"    │
+│  description    │  string      │  optional                                  │
+└─────────────────┴──────────────┴────────────────────────────────────────────┘
+
+  * = has UNIQUE constraint
+
+────────────────────────────────────────────────────────────────────────────────
+2.  RELATIONSHIPS  (source -[REL]-> target)
+────────────────────────────────────────────────────────────────────────────────
+
+  2a.  Paper — authorship & structure
+  ─────────────────────────────────────
+
+  Paper -[AUTHORED_BY]-> Author
+    Who wrote the paper.
+    Properties : none
+
+  Author -[CO_AUTHORED]-> Author  
+    Two authors who share at least one paper together.
+    Properties :
+      paper_count   int     number of co-authored papers (incremented on MERGE)
+
+  Paper -[HAS_SECTION]-> Section
+    Ordered sections extracted from the PDF.
+    Properties : none
+
+  Section -[NEXT_SECTION]-> Section  
+    Linked-list ordering of sections within the same paper.
+    Enables walking context windows during RAG retrieval.
+    Properties : none
 
 
-    RELATIONSHIPS
-    --------------
+  2b.  Paper — knowledge extraction
+  ────────────────────────────────────
 
-    Paper  -[AUTHORED_BY]->   Author          who wrote the paper
-    Paper  -[HAS_SECTION]->   Section         sections inside the paper
-    Paper  -[INTRODUCES]->    Concept         paper coins/defines this concept
-    Paper  -[APPLIES]->       Concept         paper uses an existing concept
-    Paper  -[USES_METHOD]->   Method          method used in the paper
-    Paper  -[USES_DATASET]->  Dataset         dataset used in the paper
-    Paper  -[BELONGS_TO]->    Topic           paper belongs to a research topic
-    Paper  -[CITES]->         Paper           direct citation
-    Paper  -[SIMILAR_TO]->    Paper           same problem, different approach
-    Paper  -[EXTENDS]->       Paper           builds directly on prior work
-    Paper  -[CONTRADICTS]->   Paper           disputes findings of another paper
+  Paper -[INTRODUCES]-> Concept
+    Paper coins or defines this concept for the first time.
+    Properties :
+      source        string    "llm" | "pdf"
+      confidence    float     0.0 – 1.0  (LLM-assigned)  
 
-    Concept-[RELATED_TO]->    Concept         conceptually linked ideas
-    Concept-[SYNONYM_OF]->    Concept         same idea, different names
+  Paper -[APPLIES]-> Concept
+    Paper uses an existing concept without introducing it.
+    Properties :
+      source        string    "llm" | "pdf"
+      confidence    float     0.0 – 1.0  
 
-    Topic  -[BELONGS_TO]->    Topic           sub-topic hierarchy
-                                              e.g. GAN -> Deep Learning -> ML
+  Paper -[USES_METHOD]-> Method
+    Method employed in the paper.
+    Properties :
+      source        string    "llm" | "pdf"
+      confidence    float     0.0 – 1.0  
 
+  Paper -[USES_DATASET]-> Dataset
+    Dataset used for training or evaluation.
+    Properties :
+      source        string    "llm" | "pdf"
+      confidence    float     0.0 – 1.0  
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-2. NODE PROPERTIES
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-    Paper
-    ------
-        paper_id            string      unique
-        title               string
-        abstract            string
-        arxiv_id            string      unique
-        pdf_url             string
-        published_date      date
-        year                int
-        category            string      e.g. cs.CR, cs.LG
+  Paper -[BELONGS_TO]-> Topic
+    Paper belongs to a research area.
+    Properties :
+      source        string    "llm"
+      confidence    float     0.0 – 1.0  
 
 
-    Author
-    -------
-        author_id           string      unique
-        name                string
-        name_normalized     string      lowercase + stripped  [dedup fallback]
-        aliases             list<str>   other name variants seen
-        orcid               string      unique, optional      [dedup primary]
-        affiliation         string      optional
-        email               string      optional
+  2c.  Paper — inter-paper
+  ──────────────────────────
+
+  Paper -[CITES]-> Paper
+    Direct citation extracted from PDF bibliography.
+    Target may be a stub node (stub: true) if not yet ingested.
+    Properties : none
+
+  Paper -[EXTENDS]-> Paper
+    Paper directly builds on or extends prior work.
+    Properties :
+      source        string    "llm"
+      confidence    float     0.0 – 1.0  
+
+  Paper -[CONTRADICTS]-> Paper
+    Paper disputes findings of another paper.
+    Properties :
+      source        string    "llm"
+      confidence    float     0.0 – 1.0  
 
 
-    Section
-    --------
-        section_id          string      unique
-        title               string
-        content             string
-        section_order       int
-        embedding           vector      for RAG retrieval
+  2d.  Knowledge — inter-node
+  ─────────────────────────────
+
+  Concept -[RELATED_TO]-> Concept
+    Conceptually linked ideas extracted by LLM.
+    Properties :
+      source        string    "llm"
+      confidence    float     0.0 – 1.0  
+
+  Method -[EXTENDS]-> Method  
+    One method builds on another  (e.g. LoRA -> PEFT -> Transformer).
+    Properties :
+      source        string    "llm"
+      confidence    float     0.0 – 1.0
+
+  Topic -[BELONGS_TO]-> Topic
+    Sub-topic hierarchy  (e.g. GAN -> Deep Learning -> Machine Learning).
+    Properties : none
+
+────────────────────────────────────────────────────────────────────────────────
+3.  CONSTRAINTS & INDEXES
+────────────────────────────────────────────────────────────────────────────────
+
+  UNIQUE CONSTRAINTS
+  ──────────────────
+  CREATE CONSTRAINT paper_arxiv_id   IF NOT EXISTS FOR (p:Paper)   REQUIRE p.arxiv_id    IS UNIQUE
+  CREATE CONSTRAINT author_id        IF NOT EXISTS FOR (a:Author)  REQUIRE a.author_id   IS UNIQUE
+  CREATE CONSTRAINT section_id       IF NOT EXISTS FOR (s:Section) REQUIRE s.section_id  IS UNIQUE
+  CREATE CONSTRAINT concept_name     IF NOT EXISTS FOR (c:Concept) REQUIRE c.name_norm   IS UNIQUE
+  CREATE CONSTRAINT method_name      IF NOT EXISTS FOR (m:Method)  REQUIRE m.name_norm   IS UNIQUE
+  CREATE CONSTRAINT dataset_name     IF NOT EXISTS FOR (d:Dataset) REQUIRE d.name_norm   IS UNIQUE
+  CREATE CONSTRAINT topic_name       IF NOT EXISTS FOR (t:Topic)   REQUIRE t.name_norm   IS UNIQUE
+
+  VECTOR INDEX  (for RAG retrieval)
+  ──────────────────────────────────
+  CREATE VECTOR INDEX section_embedding IF NOT EXISTS
+    FOR (s:Section) ON s.embedding
+    OPTIONS { indexConfig: { `vector.dimensions`: 768, `vector.similarity_function`: 'cosine' } }
+
+  REGULAR INDEXES  (query performance)
+  ──────────────────────────────────────
+  CREATE INDEX paper_year    IF NOT EXISTS FOR (p:Paper)  ON (p.year)
+  CREATE INDEX paper_stub    IF NOT EXISTS FOR (p:Paper)  ON (p.stub)
+  CREATE INDEX paper_cat     IF NOT EXISTS FOR (p:Paper)  ON (p.category)
+  CREATE INDEX author_orcid  IF NOT EXISTS FOR (a:Author) ON (a.orcid)
 
 
-    Concept
-    --------
-        concept_id          string      unique
-        name                string
-        name_normalized     string      for dedup
-        description         string      optional
+────────────────────────────────────────────────────────────────────────────────
+4.  DEDUPLICATION RULES
+────────────────────────────────────────────────────────────────────────────────
+
+  Node        Primary key             Fallback
+  ──────────  ──────────────────────  ──────────────────────────────────────
+  Paper       arxiv_id                title_norm
+  Author      orcid                   name_norm  (+affiliation if available)
+  Section     section_id              —
+  Concept     name_norm               —
+  Method      name_norm               —
+  Dataset     name_norm               —
+  Topic       name_norm               —
+
+  All ingestion uses MERGE — never INSERT.
 
 
-    Method
-    -------
-        method_id           string      unique
-        name                string
-        name_normalized     string      for dedup
-        category            string      optional  e.g. deep learning, statistical
-        description         string      optional
+────────────────────────────────────────────────────────────────────────────────
+5.  QUICK DESIGN NOTES
+────────────────────────────────────────────────────────────────────────────────
 
+  - Embeddings live only on Section nodes (RAG backbone).
+    Paper has no embedding — retrieval is at section granularity.
 
-    Dataset
-    --------
-        dataset_id          string      unique
-        name                string
-        name_normalized     string      for dedup
-        description         string      optional
-        url                 string      optional
+  - INTRODUCES vs APPLIES distinguishes novel vs applied concept usage.
 
+  - stub: true on Paper marks citation-only stubs awaiting ingestion.
+    Query uningested stubs:
+      MATCH (p:Paper {stub: true}) RETURN p.arxiv_id ORDER BY p.arxiv_id
 
-    Topic
-    ------
-        topic_id            string      unique
-        name                string
-        name_normalized     string      for dedup
-        domain              string      optional  e.g. cybersecurity, nlp
-        description         string      optional
+  - confidence float on LLM edges enables quality-filtered queries:
+      MATCH (p:Paper)-[r:INTRODUCES {source:'llm'}]->(c:Concept)
+      WHERE r.confidence >= 0.8 RETURN p.title, c.name
 
+  - Topic hierarchy enables drill-down:
+      MATCH (t:Topic)-[:BELONGS_TO*]->(root:Topic {name_norm:'machine learning'})
+      RETURN t.name
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-3. DEDUPLICATION RULES
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  - Method hierarchy mirrors Topic hierarchy:
+      MATCH (m:Method)-[:EXTENDS*]->(root:Method {name_norm:'transformer'})
+      RETURN m.name
 
-    Node        Primary Key             Fallback
-    -------     -------------------     ---------------------------
-    Paper       arxiv_id                —
-    Author      orcid                   name_normalized + affiliation
-    Concept     name_normalized         —
-    Method      name_normalized         —
-    Dataset     name_normalized         —
-    Topic       name_normalized         —
+  - NEXT_SECTION enables context-window expansion for RAG:
+      MATCH (s:Section {section_id: $hit_id})-[:NEXT_SECTION]->(next:Section)
+      RETURN s.content + next.content AS context
 
-    All ingestion uses MERGE to avoid duplicates.
+  - CO_AUTHORED enables collaboration network queries:
+      MATCH (a:Author {name_norm: 'vaswani'})-[:CO_AUTHORED*1..2]-(collab:Author)
+      RETURN DISTINCT collab.name
 
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-4. QUICK NOTES
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-    - Embeddings live only on Section nodes (RAG backbone)
-    - Paper has no embedding — retrieval happens at section granularity
-    - INTRODUCES vs APPLIES distinguishes novel vs applied concept usage
-    - SIMILAR_TO / EXTENDS / CONTRADICTS replace a generic RELATED_TO for papers
-    - Topic hierarchy via BELONGS_TO enables drill-down queries
-      e.g. MATCH (t:Topic)-[:BELONGS_TO*]->(root:Topic {name:"ML"})
-
+================================================================================
+  END OF SCHEMA REFERENCE
 ================================================================================
