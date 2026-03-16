@@ -1,0 +1,136 @@
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1. NODES & RELATIONSHIPS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    NODES
+    ------
+    Paper
+    Author
+    Section
+    Concept
+    Method
+    Dataset
+    Topic
+
+
+    RELATIONSHIPS
+    --------------
+
+    Paper  -[AUTHORED_BY]->   Author          who wrote the paper
+    Paper  -[HAS_SECTION]->   Section         sections inside the paper
+    Paper  -[INTRODUCES]->    Concept         paper coins/defines this concept
+    Paper  -[APPLIES]->       Concept         paper uses an existing concept
+    Paper  -[USES_METHOD]->   Method          method used in the paper
+    Paper  -[USES_DATASET]->  Dataset         dataset used in the paper
+    Paper  -[BELONGS_TO]->    Topic           paper belongs to a research topic
+    Paper  -[CITES]->         Paper           direct citation
+    Paper  -[SIMILAR_TO]->    Paper           same problem, different approach
+    Paper  -[EXTENDS]->       Paper           builds directly on prior work
+    Paper  -[CONTRADICTS]->   Paper           disputes findings of another paper
+
+    Concept-[RELATED_TO]->    Concept         conceptually linked ideas
+    Concept-[SYNONYM_OF]->    Concept         same idea, different names
+
+    Topic  -[BELONGS_TO]->    Topic           sub-topic hierarchy
+                                              e.g. GAN -> Deep Learning -> ML
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+2. NODE PROPERTIES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    Paper
+    ------
+        paper_id            string      unique
+        title               string
+        abstract            string
+        arxiv_id            string      unique
+        pdf_url             string
+        published_date      date
+        year                int
+        category            string      e.g. cs.CR, cs.LG
+
+
+    Author
+    -------
+        author_id           string      unique
+        name                string
+        name_normalized     string      lowercase + stripped  [dedup fallback]
+        aliases             list<str>   other name variants seen
+        orcid               string      unique, optional      [dedup primary]
+        affiliation         string      optional
+        email               string      optional
+
+
+    Section
+    --------
+        section_id          string      unique
+        title               string
+        content             string
+        section_order       int
+        embedding           vector      for RAG retrieval
+
+
+    Concept
+    --------
+        concept_id          string      unique
+        name                string
+        name_normalized     string      for dedup
+        description         string      optional
+
+
+    Method
+    -------
+        method_id           string      unique
+        name                string
+        name_normalized     string      for dedup
+        category            string      optional  e.g. deep learning, statistical
+        description         string      optional
+
+
+    Dataset
+    --------
+        dataset_id          string      unique
+        name                string
+        name_normalized     string      for dedup
+        description         string      optional
+        url                 string      optional
+
+
+    Topic
+    ------
+        topic_id            string      unique
+        name                string
+        name_normalized     string      for dedup
+        domain              string      optional  e.g. cybersecurity, nlp
+        description         string      optional
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+3. DEDUPLICATION RULES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    Node        Primary Key             Fallback
+    -------     -------------------     ---------------------------
+    Paper       arxiv_id                —
+    Author      orcid                   name_normalized + affiliation
+    Concept     name_normalized         —
+    Method      name_normalized         —
+    Dataset     name_normalized         —
+    Topic       name_normalized         —
+
+    All ingestion uses MERGE to avoid duplicates.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+4. QUICK NOTES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    - Embeddings live only on Section nodes (RAG backbone)
+    - Paper has no embedding — retrieval happens at section granularity
+    - INTRODUCES vs APPLIES distinguishes novel vs applied concept usage
+    - SIMILAR_TO / EXTENDS / CONTRADICTS replace a generic RELATED_TO for papers
+    - Topic hierarchy via BELONGS_TO enables drill-down queries
+      e.g. MATCH (t:Topic)-[:BELONGS_TO*]->(root:Topic {name:"ML"})
+
+================================================================================
