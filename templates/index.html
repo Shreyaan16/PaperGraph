@@ -1,0 +1,1481 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PaperGraph — Research Intelligence</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=JetBrains+Mono:wght@300;400;500&family=Syne:wght@400;600;700;800&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js"></script>
+<style>
+  /* ── Variables ── */
+  :root {
+    --bg:        #0a0b0f;
+    --bg2:       #111318;
+    --bg3:       #181b22;
+    --border:    #23273a;
+    --accent:    #5b8fff;
+    --accent2:   #ff6b6b;
+    --accent3:   #4ecdc4;
+    --accent4:   #ffd93d;
+    --text:      #e8eaf0;
+    --text2:     #8892a4;
+    --text3:     #4a5568;
+    --glow:      rgba(91, 143, 255, 0.15);
+
+    /* node colors */
+    --paper:   #5b8fff;
+    --author:  #ff6b6b;
+    --concept: #4ecdc4;
+    --method:  #ffd93d;
+    --dataset: #c084fc;
+    --topic:   #fb923c;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: 'Syne', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    height: 100vh;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* ── Noise texture overlay ── */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.04'/%3E%3C/svg%3E");
+    pointer-events: none;
+    z-index: 9999;
+  }
+
+  /* ── Header ── */
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    padding: 0 2rem;
+    height: 56px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg2);
+    flex-shrink: 0;
+    z-index: 100;
+    position: relative;
+  }
+
+  .logo {
+    display: flex;
+    align-items: center;
+    z-index: 1;
+  }
+
+  .logo-img {
+    width: auto;
+    max-width: 160px;
+    height: 48px;
+    object-fit: contain;
+    object-position: center;
+    display: block;
+    padding: 2px;
+    border-radius: 10px;
+    border: 1px solid var(--border);
+    background: var(--bg3);
+    filter: drop-shadow(0 0 8px rgba(91,143,255,0.35));
+  }
+
+  .header-title {
+    font-family: 'DM Serif Display', serif;
+    font-size: 1.25rem;
+    letter-spacing: 0.02em;
+    color: var(--text);
+    position: absolute;
+    left: 50%;
+    transform: translateX(-50%);
+    white-space: nowrap;
+    pointer-events: none;
+  }
+
+  .header-title span { color: var(--accent); }
+
+  .session-badge {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.7rem;
+    color: var(--text2);
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    padding: 0.2rem 0.6rem;
+    border-radius: 4px;
+    display: none;
+    margin-left: auto;
+    z-index: 1;
+  }
+
+  /* ── Main Layout ── */
+  .app-body {
+    flex: 1;
+    display: grid;
+    grid-template-columns: 340px 1fr;
+    overflow: hidden;
+  }
+
+  /* ── Sidebar ── */
+  .sidebar {
+    border-right: 1px solid var(--border);
+    background: var(--bg2);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  .sidebar-section {
+    padding: 1.25rem 1.5rem;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .sidebar-section h3 {
+    font-size: 0.65rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--text3);
+    margin-bottom: 1rem;
+    font-weight: 600;
+  }
+
+  /* ── Topic Input ── */
+  .topic-form {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+  }
+
+  .input-wrap {
+    position: relative;
+  }
+
+  .input-wrap input, .input-wrap select {
+    width: 100%;
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 0.65rem 1rem;
+    border-radius: 8px;
+    font-family: 'Syne', sans-serif;
+    font-size: 0.85rem;
+    outline: none;
+    transition: border-color 0.2s, box-shadow 0.2s;
+    appearance: none;
+  }
+
+  .input-wrap input:focus, .input-wrap select:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--glow);
+  }
+
+  .input-wrap select option { background: var(--bg3); }
+
+  .btn-ingest {
+    width: 100%;
+    padding: 0.7rem;
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    border-radius: 8px;
+    font-family: 'Syne', sans-serif;
+    font-size: 0.85rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    cursor: pointer;
+    transition: background 0.2s, transform 0.15s, box-shadow 0.2s;
+    text-transform: uppercase;
+  }
+
+  .btn-ingest:hover:not(:disabled) {
+    background: #7aa3ff;
+    box-shadow: 0 0 20px rgba(91, 143, 255, 0.4);
+    transform: translateY(-1px);
+  }
+
+  .btn-ingest:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+    transform: none;
+  }
+
+  /* ── Status Log ── */
+  .log-area {
+    flex: 1;
+    overflow-y: auto;
+    padding: 1rem 1.5rem;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.72rem;
+    line-height: 1.8;
+    color: var(--text2);
+  }
+
+  .log-area::-webkit-scrollbar { width: 4px; }
+  .log-area::-webkit-scrollbar-track { background: transparent; }
+  .log-area::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+  .log-line { animation: fade-in 0.3s ease; }
+  .log-line.success { color: #4ade80; }
+  .log-line.error   { color: var(--accent2); }
+  .log-line.info    { color: var(--text2); }
+  .log-line.header  { color: var(--accent); font-weight: 500; }
+
+  @keyframes fade-in {
+    from { opacity: 0; transform: translateX(-6px); }
+    to   { opacity: 1; transform: translateX(0); }
+  }
+
+  /* ── Papers list ── */
+  .papers-list {
+    padding: 0.5rem 1.5rem 1rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+
+  .paper-chip {
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--paper);
+    padding: 0.5rem 0.75rem;
+    border-radius: 6px;
+    font-size: 0.75rem;
+    color: var(--text2);
+    animation: fade-in 0.4s ease;
+  }
+
+  .paper-chip strong {
+    display: block;
+    color: var(--text);
+    font-size: 0.78rem;
+    margin-bottom: 0.15rem;
+    line-height: 1.3;
+  }
+
+  /* ── Right panel: tabs ── */
+  .main-panel {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    min-height: 0;
+  }
+
+  .tab-bar {
+    display: flex;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg2);
+    padding: 0 1.5rem;
+    flex-shrink: 0;
+  }
+
+  .tab-btn {
+    padding: 0 1.25rem;
+    height: 48px;
+    background: none;
+    border: none;
+    color: var(--text3);
+    font-family: 'Syne', sans-serif;
+    font-size: 0.8rem;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    transition: color 0.2s, border-color 0.2s;
+    margin-bottom: -1px;
+  }
+
+  .tab-btn:hover { color: var(--text2); }
+  .tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+  .tab-content {
+    flex: 1 1 0;
+    overflow: hidden;
+    display: none;
+    min-height: 0;
+  }
+
+  .tab-content.active { display: flex; flex-direction: column; overflow: hidden; }
+
+  /* ── Graph Panel ── */
+  #graph-panel {
+    position: relative;
+    background: radial-gradient(ellipse at 30% 40%, rgba(91,143,255,0.04) 0%, transparent 60%),
+                radial-gradient(ellipse at 70% 60%, rgba(78,205,196,0.03) 0%, transparent 50%),
+                var(--bg);
+  }
+
+  #graph-svg {
+    width: 100%;
+    flex: 1;
+    min-height: 0;
+  }
+
+  .graph-empty {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 1rem;
+    color: var(--text3);
+    pointer-events: none;
+  }
+
+  .graph-empty .icon {
+    font-size: 3rem;
+    opacity: 0.3;
+  }
+
+  .graph-empty p {
+    font-size: 0.85rem;
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  /* ── Graph controls ── */
+  .graph-controls {
+    position: absolute;
+    bottom: 1.5rem;
+    right: 1.5rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    z-index: 10;
+  }
+
+  .graph-btn {
+    width: 36px; height: 36px;
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    color: var(--text2);
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 1rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.15s, color 0.15s;
+  }
+
+  .graph-btn:hover { background: var(--bg3); color: var(--text); }
+
+  /* ── Graph Legend ── */
+  .graph-legend {
+    position: absolute;
+    top: 1rem;
+    left: 1rem;
+    background: rgba(17, 19, 24, 0.9);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 0.75rem 1rem;
+    backdrop-filter: blur(8px);
+    z-index: 10;
+  }
+
+  .legend-title {
+    font-size: 0.6rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--text3);
+    margin-bottom: 0.5rem;
+    font-weight: 600;
+  }
+
+  .legend-items { display: flex; flex-direction: column; gap: 0.3rem; }
+
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.72rem;
+    color: var(--text2);
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  .legend-dot {
+    width: 10px; height: 10px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+
+  /* ── Tooltip ── */
+  #tooltip {
+    position: fixed;
+    pointer-events: none;
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 0.75rem 1rem;
+    max-width: 280px;
+    z-index: 1000;
+    opacity: 0;
+    transition: opacity 0.15s;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+  }
+
+  #tooltip.visible { opacity: 1; }
+
+  .tooltip-label {
+    font-size: 0.65rem;
+    color: var(--accent);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    font-weight: 600;
+    margin-bottom: 0.25rem;
+  }
+
+  .tooltip-name {
+    font-family: 'DM Serif Display', serif;
+    font-size: 0.95rem;
+    color: var(--text);
+    margin-bottom: 0.4rem;
+    line-height: 1.3;
+  }
+
+  .tooltip-desc {
+    font-size: 0.72rem;
+    color: var(--text2);
+    line-height: 1.5;
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  /* ── Chat Panel ── */
+  #chat-panel {
+    background: var(--bg);
+    min-height: 0;
+  }
+
+  .chat-messages {
+    flex: 1;
+    overflow-y: auto;
+    padding: 1.5rem;
+    display: flex;
+    flex-direction: column;
+    gap: 1.25rem;
+  }
+
+  .chat-messages::-webkit-scrollbar { width: 4px; }
+  .chat-messages::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+  .chat-empty {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.75rem;
+    color: var(--text3);
+  }
+
+  .chat-empty .big-icon { font-size: 2.5rem; opacity: 0.4; }
+
+  .chat-empty p {
+    font-size: 0.8rem;
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  .msg {
+    display: flex;
+    gap: 0.75rem;
+    animation: msg-in 0.3s ease;
+    max-width: 80%;
+  }
+
+  @keyframes msg-in {
+    from { opacity: 0; transform: translateY(8px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+
+  .msg.user { align-self: flex-end; flex-direction: row-reverse; }
+  .msg.assistant { align-self: flex-start; }
+
+  .msg-avatar {
+    width: 32px; height: 32px;
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.9rem;
+    flex-shrink: 0;
+  }
+
+  .msg.user .msg-avatar {
+    background: rgba(91,143,255,0.15);
+    border: 1px solid rgba(91,143,255,0.3);
+  }
+
+  .msg.assistant .msg-avatar {
+    background: rgba(78,205,196,0.1);
+    border: 1px solid rgba(78,205,196,0.3);
+  }
+
+  .msg-bubble {
+    padding: 0.75rem 1rem;
+    border-radius: 12px;
+    font-size: 0.85rem;
+    line-height: 1.65;
+  }
+
+  .msg.user .msg-bubble {
+    background: rgba(91,143,255,0.12);
+    border: 1px solid rgba(91,143,255,0.2);
+    border-top-right-radius: 4px;
+    color: var(--text);
+  }
+
+  .msg.assistant .msg-bubble {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-top-left-radius: 4px;
+    color: var(--text);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.8rem;
+  }
+
+  .msg-time {
+    font-size: 0.65rem;
+    color: var(--text3);
+    margin-top: 0.3rem;
+    font-family: 'JetBrains Mono', monospace;
+    text-align: right;
+  }
+
+  .msg.assistant .msg-time { text-align: left; }
+
+  /* arxiv citation highlight */
+  .msg-bubble .cite {
+    color: var(--accent);
+    font-weight: 600;
+    background: rgba(91,143,255,0.1);
+    padding: 0 0.3em;
+    border-radius: 3px;
+  }
+
+  /* typing indicator */
+  .typing-indicator {
+    display: none;
+    align-self: flex-start;
+    padding: 0.6rem 1rem;
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    border-top-left-radius: 4px;
+    gap: 5px;
+  }
+
+  .typing-indicator.visible { display: flex; }
+
+  .typing-dot {
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    background: var(--text3);
+    animation: typing 1.4s ease-in-out infinite;
+  }
+
+  .typing-dot:nth-child(2) { animation-delay: 0.2s; }
+  .typing-dot:nth-child(3) { animation-delay: 0.4s; }
+
+  @keyframes typing {
+    0%, 100% { transform: translateY(0); opacity: 0.4; }
+    50% { transform: translateY(-4px); opacity: 1; }
+  }
+
+  /* ── Chat Input ── */
+  .chat-input-area {
+    padding: 1rem 1.5rem;
+    border-top: 1px solid var(--border);
+    background: var(--bg2);
+    display: flex;
+    gap: 0.75rem;
+    align-items: flex-end;
+  }
+
+  .chat-input-wrap {
+    flex: 1;
+    position: relative;
+  }
+
+  .chat-input {
+    width: 100%;
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 0.7rem 1rem;
+    border-radius: 10px;
+    font-family: 'Syne', sans-serif;
+    font-size: 0.85rem;
+    outline: none;
+    resize: none;
+    line-height: 1.5;
+    max-height: 120px;
+    transition: border-color 0.2s, box-shadow 0.2s;
+  }
+
+  .chat-input:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--glow);
+  }
+
+  .chat-input:disabled { opacity: 0.4; }
+  .chat-input::placeholder { color: var(--text3); }
+
+  .btn-send {
+    width: 40px; height: 40px;
+    background: var(--accent);
+    border: none;
+    border-radius: 10px;
+    color: #fff;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    transition: background 0.2s, transform 0.15s, box-shadow 0.2s;
+  }
+
+  .btn-send:hover:not(:disabled) {
+    background: #7aa3ff;
+    box-shadow: 0 0 16px rgba(91,143,255,0.5);
+    transform: translateY(-1px);
+  }
+
+  .btn-send:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
+
+  .btn-send svg { width: 16px; height: 16px; fill: white; }
+
+  /* ── Node click panel ── */
+  .node-detail {
+    position: absolute;
+    top: 1rem;
+    right: 1rem;
+    width: 280px;
+    background: rgba(17, 19, 24, 0.95);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 1rem;
+    backdrop-filter: blur(12px);
+    z-index: 20;
+    display: none;
+    animation: fade-in 0.2s ease;
+  }
+
+  .node-detail.visible { display: block; }
+
+  .node-detail-close {
+    position: absolute;
+    top: 0.75rem; right: 0.75rem;
+    background: none;
+    border: none;
+    color: var(--text3);
+    cursor: pointer;
+    font-size: 1rem;
+    line-height: 1;
+  }
+
+  .node-detail-label {
+    font-size: 0.6rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    font-weight: 600;
+    margin-bottom: 0.4rem;
+  }
+
+  .node-detail-name {
+    font-family: 'DM Serif Display', serif;
+    font-size: 1rem;
+    color: var(--text);
+    margin-bottom: 0.5rem;
+    line-height: 1.3;
+    padding-right: 1.5rem;
+  }
+
+  .node-detail-meta {
+    font-size: 0.72rem;
+    color: var(--text2);
+    line-height: 1.6;
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  /* ── Stats bar ── */
+  .stats-bar {
+    display: none;
+    padding: 0.5rem 1.5rem;
+    gap: 1.5rem;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg2);
+    flex-shrink: 0;
+  }
+
+  .stats-bar.visible { display: flex; }
+
+  .stat-item {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-size: 0.72rem;
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  .stat-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+  }
+
+  .stat-val { color: var(--text); font-weight: 500; }
+  .stat-lbl { color: var(--text3); }
+
+  /* ── Suggested queries ── */
+  .suggestions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    padding: 0 1.5rem 0.75rem;
+  }
+
+  .suggestion-chip {
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    padding: 0.3rem 0.75rem;
+    border-radius: 20px;
+    font-size: 0.72rem;
+    color: var(--text2);
+    cursor: pointer;
+    transition: background 0.2s, color 0.2s, border-color 0.2s;
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  .suggestion-chip:hover {
+    background: rgba(91,143,255,0.1);
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+
+  /* ── Loading spinner ── */
+  .spinner {
+    display: inline-block;
+    width: 14px; height: 14px;
+    border: 2px solid rgba(91,143,255,0.3);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+    vertical-align: middle;
+    margin-right: 6px;
+  }
+
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ── Scrollbar global ── */
+  * { scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
+</style>
+</head>
+<body>
+
+<!-- Tooltip -->
+<div id="tooltip">
+  <div class="tooltip-label" id="tt-label"></div>
+  <div class="tooltip-name" id="tt-name"></div>
+  <div class="tooltip-desc" id="tt-desc"></div>
+</div>
+
+<!-- Header -->
+<header>
+  <div class="logo">
+    <img src="/static/logo.png" alt="PaperGraph Logo" class="logo-img">
+  </div>
+  <span class="header-title">Paper<span>Graph</span></span>
+  <span class="session-badge" id="session-badge">no session</span>
+</header>
+
+<!-- App Body -->
+<div class="app-body">
+
+  <!-- Sidebar -->
+  <aside class="sidebar">
+
+    <!-- Ingest Form -->
+    <div class="sidebar-section">
+      <h3>New Research Session</h3>
+      <div class="topic-form">
+        <div class="input-wrap">
+          <input type="text" id="topic-input" placeholder="e.g. attention mechanisms in transformers"
+                 autocomplete="off">
+        </div>
+        <div class="input-wrap">
+          <select id="paper-count">
+            <option value="2">2 papers (fastest)</option>
+            <option value="3" selected>3 papers (recommended)</option>
+          </select>
+        </div>
+        <button class="btn-ingest" id="btn-ingest" onclick="startIngestion()">
+          Ingest Papers
+        </button>
+      </div>
+    </div>
+
+    <!-- Papers List -->
+    <div class="sidebar-section" id="papers-section" style="display:none">
+      <h3>Ingested Papers</h3>
+      <div class="papers-list" id="papers-list"></div>
+    </div>
+
+    <!-- Log -->
+    <div class="log-area" id="log-area">
+      <div class="log-line info">Ready. Enter a research topic to begin.</div>
+    </div>
+
+  </aside>
+
+  <!-- Main Panel -->
+  <main class="main-panel">
+
+    <!-- Tabs -->
+    <div class="tab-bar">
+      <button class="tab-btn active" onclick="switchTab('graph')">Knowledge Graph</button>
+      <button class="tab-btn" onclick="switchTab('chat')">Research Chat</button>
+    </div>
+
+    <!-- Graph Tab -->
+    <div class="tab-content active" id="graph-panel">
+
+      <!-- Stats bar inside graph panel -->
+      <div class="stats-bar" id="stats-bar">
+        <div class="stat-item">
+          <div class="stat-dot" style="background:var(--paper)"></div>
+          <span class="stat-val" id="stat-papers">0</span>
+          <span class="stat-lbl">papers</span>
+        </div>
+        <div class="stat-item">
+          <div class="stat-dot" style="background:var(--author)"></div>
+          <span class="stat-val" id="stat-authors">0</span>
+          <span class="stat-lbl">authors</span>
+        </div>
+        <div class="stat-item">
+          <div class="stat-dot" style="background:var(--concept)"></div>
+          <span class="stat-val" id="stat-concepts">0</span>
+          <span class="stat-lbl">concepts</span>
+        </div>
+        <div class="stat-item">
+          <div class="stat-dot" style="background:var(--method)"></div>
+          <span class="stat-val" id="stat-methods">0</span>
+          <span class="stat-lbl">methods</span>
+        </div>
+        <div class="stat-item">
+          <div class="stat-dot" style="background:var(--topic)"></div>
+          <span class="stat-val" id="stat-topics">0</span>
+          <span class="stat-lbl">topics</span>
+        </div>
+        <div class="stat-item">
+          <div class="stat-dot" style="background:var(--border)"></div>
+          <span class="stat-val" id="stat-edges">0</span>
+          <span class="stat-lbl">relationships</span>
+        </div>
+      </div>
+
+      <div class="graph-empty" id="graph-empty">
+        <div class="icon">⬡</div>
+        <p>Ingest papers to visualize the knowledge graph</p>
+      </div>
+
+      <svg id="graph-svg"></svg>
+
+      <!-- Legend -->
+      <div class="graph-legend" id="graph-legend" style="display:none">
+        <div class="legend-title">Node Types</div>
+        <div class="legend-items">
+          <div class="legend-item"><div class="legend-dot" style="background:var(--paper)"></div>Paper</div>
+          <div class="legend-item"><div class="legend-dot" style="background:var(--author)"></div>Author</div>
+          <div class="legend-item"><div class="legend-dot" style="background:var(--concept)"></div>Concept</div>
+          <div class="legend-item"><div class="legend-dot" style="background:var(--method)"></div>Method</div>
+          <div class="legend-item"><div class="legend-dot" style="background:var(--dataset)"></div>Dataset</div>
+          <div class="legend-item"><div class="legend-dot" style="background:var(--topic)"></div>Topic</div>
+        </div>
+      </div>
+
+      <!-- Node Detail Panel -->
+      <div class="node-detail" id="node-detail">
+        <button class="node-detail-close" onclick="closeNodeDetail()">✕</button>
+        <div class="node-detail-label" id="nd-label"></div>
+        <div class="node-detail-name" id="nd-name"></div>
+        <div class="node-detail-meta" id="nd-meta"></div>
+      </div>
+
+      <!-- Controls -->
+      <div class="graph-controls">
+        <button class="graph-btn" onclick="zoomIn()" title="Zoom in">+</button>
+        <button class="graph-btn" onclick="zoomOut()" title="Zoom out">−</button>
+        <button class="graph-btn" onclick="resetZoom()" title="Reset">⊙</button>
+      </div>
+    </div>
+
+    <!-- Chat Tab -->
+    <div class="tab-content" id="chat-panel">
+      <div class="chat-messages" id="chat-messages">
+        <div class="chat-empty" id="chat-empty">
+          <div class="big-icon">🔬</div>
+          <p>Ingest papers first, then ask anything.</p>
+        </div>
+      </div>
+
+      <!-- Suggestions -->
+      <div class="suggestions" id="suggestions" style="display:none">
+        <span class="suggestion-chip" onclick="useSuggestion(this)">Who are the authors?</span>
+        <span class="suggestion-chip" onclick="useSuggestion(this)">What methods are used?</span>
+        <span class="suggestion-chip" onclick="useSuggestion(this)">Summarize the key findings</span>
+        <span class="suggestion-chip" onclick="useSuggestion(this)">What datasets are mentioned?</span>
+        <span class="suggestion-chip" onclick="useSuggestion(this)">What topics are covered?</span>
+      </div>
+
+      <div class="typing-indicator" id="typing-indicator">
+        <div class="typing-dot"></div>
+        <div class="typing-dot"></div>
+        <div class="typing-dot"></div>
+      </div>
+
+      <div class="chat-input-area">
+        <div class="chat-input-wrap">
+          <textarea class="chat-input" id="chat-input"
+                    placeholder="Ask anything about the ingested papers…"
+                    rows="1" disabled
+                    onkeydown="handleKey(event)"
+                    oninput="autoResize(this)"></textarea>
+        </div>
+        <button class="btn-send" id="btn-send" disabled onclick="sendChat()">
+          <svg viewBox="0 0 24 24"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
+        </button>
+      </div>
+    </div>
+
+  </main>
+</div>
+
+<script>
+// ══════════════════════════════════════════════════════════════════════
+//  STATE
+// ══════════════════════════════════════════════════════════════════════
+let sessionId   = null;
+let pollTimer   = null;
+let graphSim    = null;
+let svgZoom     = null;
+let svgG        = null;
+let isIngesting = false;
+
+const NODE_COLORS = {
+  Paper:   'var(--paper)',
+  Author:  'var(--author)',
+  Concept: 'var(--concept)',
+  Method:  'var(--method)',
+  Dataset: 'var(--dataset)',
+  Topic:   'var(--topic)',
+};
+
+const NODE_RADIUS = {
+  Paper:   18,
+  Author:  12,
+  Concept: 10,
+  Method:  10,
+  Dataset: 9,
+  Topic:   11,
+};
+
+// ══════════════════════════════════════════════════════════════════════
+//  INGESTION
+// ══════════════════════════════════════════════════════════════════════
+async function startIngestion() {
+  const topic = document.getElementById('topic-input').value.trim();
+  if (!topic) { alert('Please enter a research topic.'); return; }
+  if (isIngesting) return;
+
+  isIngesting = true;
+  const btn = document.getElementById('btn-ingest');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> Ingesting…';
+
+  clearLog();
+  addLog('🚀 Starting new research session…', 'header');
+
+  // Reset graph + chat
+  clearGraph();
+  clearChat();
+  document.getElementById('papers-section').style.display = 'none';
+  document.getElementById('papers-list').innerHTML = '';
+  document.getElementById('stats-bar').classList.remove('visible');
+  document.getElementById('graph-legend').style.display = 'none';
+  document.getElementById('suggestions').style.display = 'none';
+
+  const maxPapers = parseInt(document.getElementById('paper-count').value);
+
+  try {
+    const res = await fetch('/api/session/new', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ topic, max_papers: maxPapers })
+    });
+    const data = await res.json();
+    sessionId = data.session_id;
+
+    document.getElementById('session-badge').textContent = `session: ${sessionId}`;
+    document.getElementById('session-badge').style.display = 'inline';
+
+    pollTimer = setInterval(pollStatus, 1500);
+  } catch (e) {
+    addLog(`❌ Failed to start: ${e}`, 'error');
+    resetIngestBtn();
+  }
+}
+
+async function pollStatus() {
+  if (!sessionId) return;
+  try {
+    const res  = await fetch(`/api/session/${sessionId}/status`);
+    const data = await res.json();
+
+    syncLog(data.log);
+
+    if (data.papers?.length > 0) {
+      showPapers(data.papers);
+    }
+
+    if (data.status === 'ready') {
+      clearInterval(pollTimer);
+      resetIngestBtn();
+      isIngesting = false;
+      enableChat();
+      await loadGraph();
+    } else if (data.status === 'error') {
+      clearInterval(pollTimer);
+      addLog(`❌ ${data.error}`, 'error');
+      resetIngestBtn();
+      isIngesting = false;
+    }
+  } catch (e) {
+    console.error('Poll error', e);
+  }
+}
+
+let lastLogCount = 0;
+function syncLog(lines) {
+  if (!lines || lines.length === lastLogCount) return;
+  const newLines = lines.slice(lastLogCount);
+  newLines.forEach(l => {
+    let cls = 'info';
+    if (l.startsWith('✅') || l.startsWith('🎉')) cls = 'success';
+    else if (l.startsWith('❌')) cls = 'error';
+    else if (l.startsWith('📖') || l.startsWith('🔍') || l.startsWith('🚀')) cls = 'header';
+    addLog(l, cls);
+  });
+  lastLogCount = lines.length;
+}
+
+function clearLog() {
+  document.getElementById('log-area').innerHTML = '';
+  lastLogCount = 0;
+}
+
+function addLog(msg, cls = 'info') {
+  const area = document.getElementById('log-area');
+  const div  = document.createElement('div');
+  div.className = `log-line ${cls}`;
+  div.textContent = msg;
+  area.appendChild(div);
+  area.scrollTop = area.scrollHeight;
+}
+
+function showPapers(papers) {
+  const section = document.getElementById('papers-section');
+  const list    = document.getElementById('papers-list');
+  section.style.display = 'block';
+  list.innerHTML = papers.map(p => `
+    <div class="paper-chip">
+      <strong>${escHtml(p.title)}</strong>
+      <span>[${p.arxiv_id}] · ${p.year}</span>
+    </div>
+  `).join('');
+}
+
+function resetIngestBtn() {
+  const btn = document.getElementById('btn-ingest');
+  btn.disabled = false;
+  btn.textContent = 'Ingest Papers';
+}
+
+// ══════════════════════════════════════════════════════════════════════
+//  GRAPH VISUALIZATION
+// ══════════════════════════════════════════════════════════════════════
+async function loadGraph() {
+  try {
+    const res  = await fetch(`/api/session/${sessionId}/graph`);
+    const data = await res.json();
+    renderGraph(data.nodes, data.edges);
+    updateStats(data.nodes, data.edges);
+  } catch (e) {
+    addLog(`⚠️ Graph load failed: ${e}`, 'error');
+  }
+}
+
+function updateStats(nodes, edges) {
+  const counts = {};
+  nodes.forEach(n => { counts[n.label] = (counts[n.label] || 0) + 1; });
+  document.getElementById('stat-papers').textContent  = counts.Paper   || 0;
+  document.getElementById('stat-authors').textContent = counts.Author  || 0;
+  document.getElementById('stat-concepts').textContent= (counts.Concept|| 0);
+  document.getElementById('stat-methods').textContent = counts.Method  || 0;
+  document.getElementById('stat-topics').textContent  = counts.Topic   || 0;
+  document.getElementById('stat-edges').textContent   = edges.length;
+  document.getElementById('stats-bar').classList.add('visible');
+}
+
+function clearGraph() {
+  d3.select('#graph-svg').selectAll('*').remove();
+  document.getElementById('graph-empty').style.display = 'flex';
+}
+
+function renderGraph(nodes, edges) {
+  document.getElementById('graph-empty').style.display = 'none';
+  document.getElementById('graph-legend').style.display = 'block';
+
+  const svg    = d3.select('#graph-svg');
+  const width  = svg.node().clientWidth  || 900;
+  const height = svg.node().clientHeight || 600;
+
+  svg.selectAll('*').remove();
+
+  // Defs: arrow marker + glow filter
+  const defs = svg.append('defs');
+
+  // Arrow markers per rel type (one color)
+  const arrowColor = '#3a4060';
+  defs.append('marker')
+    .attr('id', 'arrow')
+    .attr('viewBox', '0 -5 10 10')
+    .attr('refX', 28).attr('refY', 0)
+    .attr('markerWidth', 6).attr('markerHeight', 6)
+    .attr('orient', 'auto')
+    .append('path')
+    .attr('d', 'M0,-5L10,0L0,5')
+    .attr('fill', arrowColor);
+
+  // Glow filter
+  const filter = defs.append('filter').attr('id', 'glow');
+  filter.append('feGaussianBlur').attr('stdDeviation', '3').attr('result', 'coloredBlur');
+  const feMerge = filter.append('feMerge');
+  feMerge.append('feMergeNode').attr('in', 'coloredBlur');
+  feMerge.append('feMergeNode').attr('in', 'SourceGraphic');
+
+  const g = svg.append('g');
+  svgG    = g;
+
+  // Zoom
+  const zoom = d3.zoom()
+    .scaleExtent([0.1, 4])
+    .on('zoom', (e) => g.attr('transform', e.transform));
+  svgZoom = zoom;
+  svg.call(zoom);
+
+  // Build id maps
+  const nodeById = {};
+  nodes.forEach(n => { nodeById[n.id] = n; });
+
+  // Filter valid edges
+  const validEdges = edges.filter(e => nodeById[e.source] && nodeById[e.target] && e.source !== e.target);
+
+  // Simulation
+  const sim = d3.forceSimulation(nodes)
+    .force('link', d3.forceLink(validEdges).id(d => d.id).distance(d => {
+      const sl = d.source.label, tl = d.target.label;
+      if (sl === 'Paper' && tl === 'Paper') return 180;
+      if (sl === 'Paper') return 120;
+      return 80;
+    }).strength(0.4))
+    .force('charge', d3.forceManyBody().strength(d => {
+      return d.label === 'Paper' ? -400 : -150;
+    }))
+    .force('center', d3.forceCenter(width / 2, height / 2))
+    .force('collision', d3.forceCollide(d => (NODE_RADIUS[d.label] || 10) + 8))
+    .alphaDecay(0.02);
+
+  graphSim = sim;
+
+  // Rel label color mapping
+  const relColors = {
+    AUTHORED_BY:  '#ff6b6b55',
+    INTRODUCES:   '#5b8fff55',
+    APPLIES:      '#5b8fff33',
+    USES_METHOD:  '#ffd93d55',
+    USES_DATASET: '#c084fc55',
+    BELONGS_TO:   '#fb923c55',
+    RELATED_TO:   '#4ecdc455',
+    EXTENDS:      '#94a3b866',
+    CONTRADICTS:  '#ff6b6b88',
+    CITES:        '#3a4a6688',
+    CO_AUTHORED:  '#ff6b6b33',
+    default:      '#3a406055',
+  };
+
+  // Edges
+  const link = g.append('g').attr('class', 'links')
+    .selectAll('line')
+    .data(validEdges)
+    .join('line')
+    .attr('stroke', d => relColors[d.rel_type] || relColors.default)
+    .attr('stroke-width', d => d.rel_type === 'CONTRADICTS' ? 2 : 1)
+    .attr('stroke-dasharray', d => d.rel_type === 'CONTRADICTS' ? '4 3' : null)
+    .attr('marker-end', d => {
+      if (['CITES', 'INTRODUCES', 'EXTENDS', 'CONTRADICTS', 'AUTHORED_BY'].includes(d.rel_type)) {
+        return 'url(#arrow)';
+      }
+      return null;
+    });
+
+  // Edge labels (rel type)
+  const linkLabel = g.append('g').attr('class', 'link-labels')
+    .selectAll('text')
+    .data(validEdges.filter(e => ['INTRODUCES','EXTENDS','CONTRADICTS','USES_METHOD'].includes(e.rel_type)))
+    .join('text')
+    .attr('font-size', 7)
+    .attr('fill', '#3a4060')
+    .attr('text-anchor', 'middle')
+    .attr('font-family', "'JetBrains Mono', monospace")
+    .text(d => d.rel_type.replace(/_/g, ' '));
+
+  // Nodes
+  const node = g.append('g').attr('class', 'nodes')
+    .selectAll('g')
+    .data(nodes)
+    .join('g')
+    .attr('class', 'node-g')
+    .style('cursor', 'pointer')
+    .call(d3.drag()
+      .on('start', (e, d) => {
+        if (!e.active) sim.alphaTarget(0.3).restart();
+        d.fx = d.x; d.fy = d.y;
+      })
+      .on('drag', (e, d) => { d.fx = e.x; d.fy = e.y; })
+      .on('end', (e, d) => {
+        if (!e.active) sim.alphaTarget(0);
+        d.fx = null; d.fy = null;
+      })
+    )
+    .on('click', (e, d) => { e.stopPropagation(); showNodeDetail(d); })
+    .on('mouseover', (e, d) => showTooltip(e, d))
+    .on('mousemove', (e)    => moveTooltip(e))
+    .on('mouseout',  ()     => hideTooltip());
+
+  // Node circle
+  node.append('circle')
+    .attr('r', d => NODE_RADIUS[d.label] || 10)
+    .attr('fill', d => {
+      const c = NODE_COLORS[d.label] || '#666';
+      return d.is_stub ? 'none' : c + '22';
+    })
+    .attr('stroke', d => NODE_COLORS[d.label] || '#666')
+    .attr('stroke-width', d => d.is_stub ? 1 : 2)
+    .attr('stroke-dasharray', d => d.is_stub ? '3 2' : null)
+    .attr('filter', d => !d.is_stub && d.label === 'Paper' ? 'url(#glow)' : null);
+
+  // Paper inner dot
+  node.filter(d => d.label === 'Paper' && !d.is_stub)
+    .append('circle')
+    .attr('r', 4)
+    .attr('fill', d => NODE_COLORS[d.label]);
+
+  // Node label
+  node.append('text')
+    .attr('dy', d => (NODE_RADIUS[d.label] || 10) + 12)
+    .attr('text-anchor', 'middle')
+    .attr('font-size', d => d.label === 'Paper' ? 9.5 : 8)
+    .attr('fill', d => d.label === 'Paper' ? 'var(--text2)' : 'var(--text3)')
+    .attr('font-family', "'Syne', sans-serif")
+    .text(d => truncate(d.display_name || '', d.label === 'Paper' ? 28 : 18));
+
+  // Tick
+  sim.on('tick', () => {
+    link
+      .attr('x1', d => d.source.x).attr('y1', d => d.source.y)
+      .attr('x2', d => d.target.x).attr('y2', d => d.target.y);
+
+    linkLabel
+      .attr('x', d => (d.source.x + d.target.x) / 2)
+      .attr('y', d => (d.source.y + d.target.y) / 2 - 3);
+
+    node.attr('transform', d => `translate(${d.x},${d.y})`);
+  });
+
+  svg.on('click', () => closeNodeDetail());
+}
+
+// Zoom controls
+function zoomIn()    { d3.select('#graph-svg').transition().call(svgZoom.scaleBy, 1.4); }
+function zoomOut()   { d3.select('#graph-svg').transition().call(svgZoom.scaleBy, 0.7); }
+function resetZoom() { d3.select('#graph-svg').transition().call(svgZoom.transform, d3.zoomIdentity); }
+
+// Tooltip
+const tooltip = document.getElementById('tooltip');
+function showTooltip(e, d) {
+  document.getElementById('tt-label').textContent = d.label;
+  document.getElementById('tt-name').textContent  = d.display_name || '';
+  document.getElementById('tt-desc').textContent  = (d.description || '').slice(0, 120) || (d.is_stub ? '(stub — not yet ingested)' : '');
+  document.getElementById('tt-label').style.color = NODE_COLORS[d.label] || 'var(--accent)';
+  tooltip.classList.add('visible');
+  moveTooltip(e);
+}
+function moveTooltip(e) {
+  let x = e.clientX + 14, y = e.clientY - 14;
+  if (x + 300 > window.innerWidth)  x = e.clientX - 310;
+  if (y + 120 > window.innerHeight) y = e.clientY - 120;
+  tooltip.style.left = x + 'px';
+  tooltip.style.top  = y + 'px';
+}
+function hideTooltip() { tooltip.classList.remove('visible'); }
+
+// Node detail panel
+function showNodeDetail(d) {
+  const panel = document.getElementById('node-detail');
+  document.getElementById('nd-label').textContent = d.label;
+  document.getElementById('nd-label').style.color = NODE_COLORS[d.label] || 'var(--accent)';
+  document.getElementById('nd-name').textContent  = d.display_name || '';
+  let meta = '';
+  if (d.arxiv_id) meta += `arxiv: ${d.arxiv_id}\n`;
+  if (d.description) meta += d.description.slice(0, 200);
+  if (d.is_stub) meta += '(citation stub — not fully ingested)';
+  document.getElementById('nd-meta').textContent = meta;
+  panel.classList.add('visible');
+}
+function closeNodeDetail() {
+  document.getElementById('node-detail').classList.remove('visible');
+}
+
+// ══════════════════════════════════════════════════════════════════════
+//  CHAT
+// ══════════════════════════════════════════════════════════════════════
+function enableChat() {
+  document.getElementById('chat-input').disabled = false;
+  document.getElementById('btn-send').disabled   = false;
+  document.getElementById('chat-empty').style.display = 'none';
+  document.getElementById('suggestions').style.display = 'flex';
+  switchTab('chat');
+}
+
+function clearChat() {
+  document.getElementById('chat-messages').innerHTML = `
+    <div class="chat-empty" id="chat-empty">
+      <div class="big-icon">🔬</div>
+      <p>Ingest papers first, then ask anything.</p>
+    </div>`;
+  document.getElementById('chat-input').disabled = true;
+  document.getElementById('btn-send').disabled   = true;
+}
+
+function handleKey(e) {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    sendChat();
+  }
+}
+
+function autoResize(el) {
+  el.style.height = 'auto';
+  el.style.height = Math.min(el.scrollHeight, 120) + 'px';
+}
+
+function useSuggestion(el) {
+  document.getElementById('chat-input').value = el.textContent;
+  sendChat();
+}
+
+async function sendChat() {
+  const input = document.getElementById('chat-input');
+  const query = input.value.trim();
+  if (!query || !sessionId) return;
+
+  input.value = '';
+  input.style.height = 'auto';
+
+  appendMsg('user', query);
+  showTyping(true);
+
+  try {
+    const res = await fetch(`/api/session/${sessionId}/chat`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ query })
+    });
+    const data = await res.json();
+    showTyping(false);
+    appendMsg('assistant', data.answer);
+  } catch (e) {
+    showTyping(false);
+    appendMsg('assistant', `⚠️ Error: ${e.message}`);
+  }
+}
+
+function appendMsg(role, content) {
+  const container = document.getElementById('chat-messages');
+  const now = new Date().toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
+
+  // Highlight arxiv citations
+  const htmlContent = escHtml(content).replace(
+    /\[(\d{4}\.\d{4,5}(?:v\d+)?)\]/g,
+    '<span class="cite">[$1]</span>'
+  );
+
+  const avatar = role === 'user' ? '👤' : '🤖';
+  const div = document.createElement('div');
+  div.className = `msg ${role}`;
+  div.innerHTML = `
+    <div class="msg-avatar">${avatar}</div>
+    <div>
+      <div class="msg-bubble">${htmlContent}</div>
+      <div class="msg-time">${now}</div>
+    </div>`;
+  container.appendChild(div);
+  container.scrollTop = container.scrollHeight;
+
+  // Move typing indicator after messages
+  const typing = document.getElementById('typing-indicator');
+  container.parentElement.insertBefore(typing, container.nextSibling);
+}
+
+function showTyping(show) {
+  document.getElementById('typing-indicator').classList.toggle('visible', show);
+}
+
+// ══════════════════════════════════════════════════════════════════════
+//  TABS
+// ══════════════════════════════════════════════════════════════════════
+function switchTab(name) {
+  document.querySelectorAll('.tab-btn').forEach((b, i) => {
+    const tabName = ['graph', 'chat'][i];
+    b.classList.toggle('active', tabName === name);
+  });
+  document.getElementById('graph-panel').classList.toggle('active', name === 'graph');
+  document.getElementById('chat-panel').classList.toggle('active',  name === 'chat');
+
+  if (name === 'graph' && graphSim) {
+    graphSim.alpha(0.1).restart();
+  }
+}
+
+// ══════════════════════════════════════════════════════════════════════
+//  UTILS
+// ══════════════════════════════════════════════════════════════════════
+function truncate(s, n) { return s.length > n ? s.slice(0, n) + '…' : s; }
+function escHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+           .replace(/"/g,'&quot;').replace(/\n/g,'<br>');
+}
+
+// Enter key on topic input
+document.getElementById('topic-input').addEventListener('keydown', e => {
+  if (e.key === 'Enter') startIngestion();
+});
+</script>
+</body>
+</html>
