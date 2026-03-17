@@ -17,4 +17,6 @@ dependencies = [
     "unstructured[pdf]>=0.21.5",
     "numpy>=2.4.3",
     "unstructured-inference>=1.5.2",
+    "langgraph>=1.1.2",
+    "matplotlib>=3.10.8",
 ]
