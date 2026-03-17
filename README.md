@@ -25,17 +25,16 @@ NEO4J_DATABASE=your_database_name
 HF_TOKEN=your_huggingface_token
 ```
 
-### 2. Install Dependencies
+### 2. Install Dependencies (uv + pyproject.toml)
 
 ```bash
-pip install -r requirements.txt
+uv sync
 ```
 
 ### 3. Run
 
 ```bash
-cd papergraph_app
-uvicorn main:app --reload --port 8000
+uv run uvicorn main:app --reload --port 8000
 ```
 
 Open http://localhost:8000
