@@ -11,6 +11,7 @@ import re
 import time
 import json
 import uuid
+import asyncio
 import tempfile
 import contextvars
 import numpy as np
@@ -70,8 +71,16 @@ def _env_float(name: str, default: float = 0.0) -> float:
         return default
 
 
+def _env_int(name: str, default: int = 0) -> int:
+    try:
+        return int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
 MODEL_INPUT_COST_PER_1M_USD = _env_float("MODEL_INPUT_COST_PER_1M_USD", 0.0)
 MODEL_OUTPUT_COST_PER_1M_USD = _env_float("MODEL_OUTPUT_COST_PER_1M_USD", 0.0)
+CHAT_TIMEOUT_SECONDS = _env_int("CHAT_TIMEOUT_SECONDS", 180)
 
 
 def _now_iso() -> str:
@@ -1509,8 +1518,17 @@ async def chat(session_id: str, req: ChatRequest):
     config = {"configurable": {"thread_id": thread_id}}
     obs_token = OBS_CONTEXT.set({"session_id": session_id, "turn_id": turn_id})
     try:
-        result = agent.invoke({"query": req.query, "messages": []}, config=config)
-        answer = result["answer"]
+        result = await asyncio.wait_for(
+            asyncio.to_thread(
+                agent.invoke,
+                {"query": req.query, "messages": []},
+                config=config,
+            ),
+            timeout=CHAT_TIMEOUT_SECONDS,
+        )
+        answer = result.get("answer") if isinstance(result, dict) else None
+        if not answer:
+            raise ValueError("Agent returned an empty answer.")
         _complete_chat_turn(
             session_id,
             turn_id,
@@ -1518,6 +1536,19 @@ async def chat(session_id: str, req: ChatRequest):
             answer=answer,
             latency_ms=_elapsed_ms(chat_started),
         )
+    except asyncio.TimeoutError:
+        timeout_msg = (
+            f"Chat timed out after {CHAT_TIMEOUT_SECONDS}s. "
+            "Try a shorter or more specific query."
+        )
+        _complete_chat_turn(
+            session_id,
+            turn_id,
+            status="error",
+            error=timeout_msg,
+            latency_ms=_elapsed_ms(chat_started),
+        )
+        raise HTTPException(504, timeout_msg)
     except Exception as e:
         _complete_chat_turn(
             session_id,

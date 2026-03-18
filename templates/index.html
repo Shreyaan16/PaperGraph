@@ -1255,6 +1255,7 @@ async function startIngestion() {
   } catch (e) {
     addLog(`❌ Failed to start: ${e}`, 'error');
     resetIngestBtn();
+    isIngesting = false;
   }
 }
 
@@ -1660,11 +1661,14 @@ function useSuggestion(el) {
 
 async function sendChat() {
   const input = document.getElementById('chat-input');
+  const sendBtn = document.getElementById('btn-send');
   const query = input.value.trim();
   if (!query || !sessionId) return;
 
   input.value = '';
   input.style.height = 'auto';
+  input.disabled = true;
+  sendBtn.disabled = true;
 
   appendMsg('user', query);
   showTyping(true);
@@ -1675,13 +1679,30 @@ async function sendChat() {
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({ query })
     });
-    const data = await res.json();
-    showTyping(false);
-    appendMsg('assistant', data.answer);
-    await loadObservations();
+    const raw = await res.text();
+    let data = {};
+    try {
+      data = raw ? JSON.parse(raw) : {};
+    } catch {
+      data = { detail: raw };
+    }
+
+    if (!res.ok) {
+      const detail = data.detail || data.error || `HTTP ${res.status}`;
+      throw new Error(detail);
+    }
+
+    const answer = (typeof data.answer === 'string' && data.answer.trim().length > 0)
+      ? data.answer
+      : '⚠️ Empty response from server.';
+    appendMsg('assistant', answer);
   } catch (e) {
-    showTyping(false);
     appendMsg('assistant', `⚠️ Error: ${e.message}`);
+  } finally {
+    showTyping(false);
+    input.disabled = false;
+    sendBtn.disabled = false;
+    input.focus();
     await loadObservations();
   }
 }
@@ -1788,13 +1809,18 @@ function renderObservations(data) {
   } else {
     ingestionList.innerHTML = ingestionEvents.slice(-120).reverse().map(ev => {
       const details = fmtDetails(ev.details || {});
-      const statusCls = ev.status === 'error' ? 'error' : (ev.status === 'running' ? 'running' : 'ok');
+      const normalizedStatus = (
+        ev.stage === 'ingestion_started' &&
+        ev.status === 'running' &&
+        !['pending', 'ingesting'].includes(data.status)
+      ) ? 'ok' : (ev.status || '');
+      const statusCls = normalizedStatus === 'error' ? 'error' : (normalizedStatus === 'running' ? 'running' : 'ok');
       return `
         <div class="obs-line ${statusCls}">
           <div class="obs-line-head">
             <span class="obs-stage">${escHtml(ev.stage || '')}</span>
             <span class="obs-ms">${fmtMs(ev.latency_ms)}</span>
-            <span class="obs-status">${escHtml(ev.status || '')}</span>
+            <span class="obs-status">${escHtml(normalizedStatus)}</span>
           </div>
           ${details ? `<div class="obs-details">${escHtml(details)}</div>` : ''}
         </div>`;
