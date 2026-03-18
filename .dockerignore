@@ -1,0 +1,10 @@
+__pycache__
+*.pyc
+.env
+.git
+.gitignore
+.venv
+notebooks
+papergraph_agent_flow.png
+structure.txt
+.python-version
