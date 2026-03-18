@@ -9,6 +9,7 @@ A FastAPI application that ingests ArXiv research papers into a Neo4j knowledge 
 - **Interactive knowledge graph** — Force-directed D3.js visualization with all node types (Paper, Author, Concept, Method, Dataset, Topic) and their relationships
 - **Multi-turn RAG chat** — LangGraph agent with Cypher + vector retrieval, conversation history per session
 - **Live ingestion log** — Real-time progress streamed to the sidebar
+- **Observation tab** — Per-node latency, token usage, estimated cost, query/response trace, and ingestion step outputs
 
 ## Setup
 
@@ -23,7 +24,13 @@ NEO4J_USERNAME=neo4j
 NEO4J_PASSWORD=your_neo4j_password
 NEO4J_DATABASE=your_database_name
 HF_TOKEN=your_huggingface_token
+LANGSMITH_API_KEY=your_langsmith_api_key
+LANGSMITH_PROJECT=papergraph
+MODEL_INPUT_COST_PER_1M_USD=0
+MODEL_OUTPUT_COST_PER_1M_USD=0
 ```
+
+`MODEL_INPUT_COST_PER_1M_USD` and `MODEL_OUTPUT_COST_PER_1M_USD` are optional and used for estimated token cost display in the Observation tab.
 
 ### 2. Install Dependencies (uv + pyproject.toml)
 
@@ -53,6 +60,11 @@ Open http://localhost:8000
    - "What methods are used?"
    - "Summarize the key contributions"
    - "What datasets are evaluated on?"
+6. **Open the Observation tab** to inspect:
+  - ingestion step-by-step outputs and timings
+  - LangGraph node latency and outputs
+  - per-turn query/response trace
+  - token usage and estimated cost
 
 ## Architecture
 
@@ -62,7 +74,8 @@ FastAPI
 ├── GET  /api/session/{id}/status  → poll ingestion progress
 ├── GET  /api/session/{id}/graph   → fetch graph data for visualization
 ├── POST /api/session/{id}/chat    → multi-turn RAG query
-└── GET  /api/session/{id}/messages→ conversation history
+├── GET  /api/session/{id}/messages→ conversation history
+└── GET  /api/session/{id}/observations → ingestion + node-level telemetry
 
 Ingestion Pipeline:
   ArXiv API → Gemini entity extraction → PDF parse → Neo4j write

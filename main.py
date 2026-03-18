@@ -11,15 +11,15 @@ import re
 import time
 import json
 import uuid
-import asyncio
 import tempfile
+import contextvars
 import numpy as np
 import requests
-from typing import Optional
+from datetime import datetime, timezone
+from typing import Optional, Any
 from collections import defaultdict
 
 import arxiv
-import fitz  # PyMuPDF
 from unstructured.partition.pdf import partition_pdf
 from pydantic import BaseModel, Field
 from typing import List, Optional as Opt
@@ -52,13 +52,247 @@ EMBED_DIM       = 768
 MAX_PAPERS      = 3
 MAX_RETRIES     = 2
 TOP_K_SECTIONS  = 5
+LLM_MODEL_NAME  = "gemini-2.5-flash"
 
 driver     = GraphDatabase.driver(NEO4J_URI, auth=NEO4J_AUTH)
 hf_client  = InferenceClient(token=HF_TOKEN)
-llm        = ChatGoogleGenerativeAI(model="gemini-2.5-flash")
+llm        = ChatGoogleGenerativeAI(model=LLM_MODEL_NAME)
 
 # ── Session store ──────────────────────────────────────────────────────────────
 sessions: dict[str, dict] = {}   # session_id → {status, papers, agent, thread_id, messages}
+OBS_CONTEXT: contextvars.ContextVar[Optional[dict[str, str]]] = contextvars.ContextVar("obs_context", default=None)
+
+
+def _env_float(name: str, default: float = 0.0) -> float:
+    try:
+        return float(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
+MODEL_INPUT_COST_PER_1M_USD = _env_float("MODEL_INPUT_COST_PER_1M_USD", 0.0)
+MODEL_OUTPUT_COST_PER_1M_USD = _env_float("MODEL_OUTPUT_COST_PER_1M_USD", 0.0)
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _elapsed_ms(started_at: float) -> float:
+    return round((time.perf_counter() - started_at) * 1000, 2)
+
+
+def _truncate_text(value: str, max_len: int = 320) -> str:
+    text = value if isinstance(value, str) else str(value)
+    return text if len(text) <= max_len else text[:max_len] + "…"
+
+
+def _ensure_observations(session_obj: dict) -> dict:
+    obs = session_obj.get("observations")
+    if obs:
+        return obs
+    obs = {
+        "meta": {
+            "model": LLM_MODEL_NAME,
+            "langsmith_enabled": bool(os.getenv("LANGSMITH_API_KEY")),
+            "langsmith_project": os.getenv("LANGSMITH_PROJECT", "default"),
+            "cost_model": {
+                "input_per_1m_usd": MODEL_INPUT_COST_PER_1M_USD,
+                "output_per_1m_usd": MODEL_OUTPUT_COST_PER_1M_USD,
+            },
+        },
+        "ingestion_events": [],
+        "chat_turns": [],
+        "totals": {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "total_tokens": 0,
+            "estimated_cost_usd": 0.0,
+        },
+    }
+    session_obj["observations"] = obs
+    return obs
+
+
+def _append_ingestion_event(
+    session_obj: dict,
+    stage: str,
+    status: str = "ok",
+    latency_ms: Optional[float] = None,
+    details: Optional[dict] = None,
+):
+    obs = _ensure_observations(session_obj)
+    event: dict[str, Any] = {
+        "timestamp": _now_iso(),
+        "stage": stage,
+        "status": status,
+    }
+    if latency_ms is not None:
+        event["latency_ms"] = latency_ms
+    if details:
+        event["details"] = details
+    obs["ingestion_events"].append(event)
+    if len(obs["ingestion_events"]) > 400:
+        obs["ingestion_events"] = obs["ingestion_events"][-400:]
+
+
+def _get_chat_turn(obs: dict, turn_id: str) -> Optional[dict]:
+    for turn in reversed(obs.get("chat_turns", [])):
+        if turn.get("turn_id") == turn_id:
+            return turn
+    return None
+
+
+def _start_chat_turn(session_obj: dict, query: str) -> str:
+    obs = _ensure_observations(session_obj)
+    turn_id = f"turn_{len(obs['chat_turns']) + 1}"
+    obs["chat_turns"].append({
+        "turn_id": turn_id,
+        "started_at": _now_iso(),
+        "status": "running",
+        "query": query,
+        "answer": "",
+        "latency_ms": None,
+        "node_events": [],
+        "llm_calls": [],
+        "token_usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+        "estimated_cost_usd": 0.0,
+    })
+    return turn_id
+
+
+def _estimate_cost_usd(input_tokens: int, output_tokens: int) -> float:
+    in_cost = (input_tokens / 1_000_000) * MODEL_INPUT_COST_PER_1M_USD
+    out_cost = (output_tokens / 1_000_000) * MODEL_OUTPUT_COST_PER_1M_USD
+    return round(in_cost + out_cost, 8)
+
+
+def _extract_usage_metadata(response) -> dict:
+    usage = {}
+    raw_usage = getattr(response, "usage_metadata", None)
+    if isinstance(raw_usage, dict):
+        usage = raw_usage
+    elif isinstance(getattr(response, "response_metadata", None), dict):
+        meta = response.response_metadata
+        usage = (
+            meta.get("token_usage")
+            or meta.get("usage_metadata")
+            or meta.get("usage")
+            or {}
+        )
+
+    input_tokens = int(
+        usage.get("input_tokens")
+        or usage.get("prompt_token_count")
+        or usage.get("prompt_tokens")
+        or 0
+    )
+    output_tokens = int(
+        usage.get("output_tokens")
+        or usage.get("candidates_token_count")
+        or usage.get("completion_tokens")
+        or 0
+    )
+    total_tokens = int(
+        usage.get("total_tokens")
+        or usage.get("total_token_count")
+        or (input_tokens + output_tokens)
+    )
+    return {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": total_tokens,
+    }
+
+
+def _record_node_event(session_id: str, turn_id: str, event: dict):
+    session_obj = sessions.get(session_id)
+    if not session_obj:
+        return
+    obs = _ensure_observations(session_obj)
+    turn = _get_chat_turn(obs, turn_id)
+    if not turn:
+        return
+    turn["node_events"].append(event)
+
+
+def _record_llm_event(session_id: str, turn_id: str, event: dict):
+    session_obj = sessions.get(session_id)
+    if not session_obj:
+        return
+    obs = _ensure_observations(session_obj)
+    turn = _get_chat_turn(obs, turn_id)
+    if not turn:
+        return
+
+    turn["llm_calls"].append(event)
+    if len(turn["llm_calls"]) > 80:
+        turn["llm_calls"] = turn["llm_calls"][-80:]
+
+    if event.get("status") == "ok":
+        usage = event.get("token_usage", {})
+        in_tokens = int(usage.get("input_tokens", 0))
+        out_tokens = int(usage.get("output_tokens", 0))
+        total_tokens = int(usage.get("total_tokens", in_tokens + out_tokens))
+        cost = float(event.get("estimated_cost_usd", 0.0))
+
+        turn_usage = turn["token_usage"]
+        turn_usage["input_tokens"] += in_tokens
+        turn_usage["output_tokens"] += out_tokens
+        turn_usage["total_tokens"] += total_tokens
+        turn["estimated_cost_usd"] = round(turn.get("estimated_cost_usd", 0.0) + cost, 8)
+
+        totals = obs["totals"]
+        totals["input_tokens"] += in_tokens
+        totals["output_tokens"] += out_tokens
+        totals["total_tokens"] += total_tokens
+        totals["estimated_cost_usd"] = round(totals.get("estimated_cost_usd", 0.0) + cost, 8)
+
+
+def _complete_chat_turn(
+    session_id: str,
+    turn_id: str,
+    status: str,
+    answer: Optional[str] = None,
+    error: Optional[str] = None,
+    latency_ms: Optional[float] = None,
+):
+    session_obj = sessions.get(session_id)
+    if not session_obj:
+        return
+    obs = _ensure_observations(session_obj)
+    turn = _get_chat_turn(obs, turn_id)
+    if not turn:
+        return
+
+    turn["status"] = status
+    turn["finished_at"] = _now_iso()
+    if latency_ms is not None:
+        turn["latency_ms"] = latency_ms
+    if answer is not None:
+        turn["answer"] = answer
+    if error:
+        turn["error"] = _truncate_text(error, 500)
+
+
+def _message_preview(messages: list) -> str:
+    previews = []
+    for msg in messages[-2:]:
+        role = getattr(msg, "type", msg.__class__.__name__)
+        content = getattr(msg, "content", "")
+        if isinstance(content, list):
+            content = json.dumps(content)
+        previews.append(f"{role}: {_truncate_text(str(content), 180)}")
+    return " | ".join(previews)
+
+
+def _response_text(response) -> str:
+    content = getattr(response, "content", "")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return " ".join(item if isinstance(item, str) else str(item) for item in content)
+    return str(content or "")
 
 app = FastAPI(title="PaperGraph")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
@@ -511,6 +745,72 @@ VALID_RELS   = {"AUTHORED_BY", "CO_AUTHORED", "HAS_SECTION", "NEXT_SECTION",
                 "BELONGS_TO", "RELATED_TO", "EXTENDS", "CONTRADICTS", "CITES"}
 
 
+def _summarize_node_output(result: dict) -> dict:
+    if not isinstance(result, dict):
+        return {"result_type": type(result).__name__}
+
+    summary = {}
+    if "intent" in result:
+        summary["intent"] = result["intent"]
+    if "entities" in result:
+        summary["entities"] = result["entities"][:5]
+    if "cypher" in result:
+        summary["cypher"] = _truncate_text(result["cypher"], 260)
+    if "graph_nodes" in result:
+        summary["graph_records"] = len(result["graph_nodes"])
+    if "paper_ids" in result:
+        summary["paper_ids"] = result["paper_ids"][:5]
+    if "sections" in result:
+        summary["sections"] = len(result["sections"])
+    if "context" in result:
+        summary["context_chars"] = len(result["context"])
+    if "answer" in result:
+        summary["answer_preview"] = _truncate_text(result["answer"], 220)
+    if result.get("cypher_feedback"):
+        summary["cypher_feedback"] = _truncate_text(result["cypher_feedback"], 220)
+    if result.get("result_feedback"):
+        summary["result_feedback"] = _truncate_text(result["result_feedback"], 220)
+
+    if not summary:
+        for key, value in list(result.items())[:4]:
+            if isinstance(value, list):
+                summary[key] = f"list[{len(value)}]"
+            elif isinstance(value, dict):
+                summary[key] = f"dict[{len(value)}]"
+            else:
+                summary[key] = _truncate_text(str(value), 120)
+    return summary
+
+
+def _instrument_node(node_name: str, fn):
+    def wrapped(state):
+        started_at = time.perf_counter()
+        obs_ctx = OBS_CONTEXT.get()
+        result = None
+        err = None
+        try:
+            result = fn(state)
+            return result
+        except Exception as exc:
+            err = str(exc)
+            raise
+        finally:
+            if obs_ctx and obs_ctx.get("session_id") and obs_ctx.get("turn_id"):
+                event = {
+                    "timestamp": _now_iso(),
+                    "node": node_name,
+                    "status": "error" if err else "ok",
+                    "latency_ms": _elapsed_ms(started_at),
+                }
+                if err:
+                    event["error"] = _truncate_text(err, 420)
+                else:
+                    event["output"] = _summarize_node_output(result if isinstance(result, dict) else {})
+                _record_node_event(obs_ctx["session_id"], obs_ctx["turn_id"], event)
+
+    return wrapped
+
+
 def _run_cypher(cypher: str):
     try:
         results, _, _ = driver.execute_query(cypher, database_=NEO4J_DATABASE)
@@ -527,11 +827,36 @@ def _run_cypher_raw(cypher: str, **params):
         return [], str(e)
 
 
-def _llm_call(messages: list):
+def _llm_call(messages: list, call_name: str = "llm_call"):
     for attempt in range(3):
+        started_at = time.perf_counter()
         try:
-            return llm.invoke(messages)
+            response = llm.invoke(messages)
+            obs_ctx = OBS_CONTEXT.get()
+            if obs_ctx and obs_ctx.get("session_id") and obs_ctx.get("turn_id"):
+                usage = _extract_usage_metadata(response)
+                llm_event = {
+                    "timestamp": _now_iso(),
+                    "call_name": call_name,
+                    "status": "ok",
+                    "latency_ms": _elapsed_ms(started_at),
+                    "token_usage": usage,
+                    "estimated_cost_usd": _estimate_cost_usd(usage["input_tokens"], usage["output_tokens"]),
+                    "prompt_preview": _message_preview(messages),
+                }
+                _record_llm_event(obs_ctx["session_id"], obs_ctx["turn_id"], llm_event)
+            return response
         except Exception as e:
+            obs_ctx = OBS_CONTEXT.get()
+            if obs_ctx and obs_ctx.get("session_id") and obs_ctx.get("turn_id"):
+                _record_llm_event(obs_ctx["session_id"], obs_ctx["turn_id"], {
+                    "timestamp": _now_iso(),
+                    "call_name": call_name,
+                    "status": "error",
+                    "latency_ms": _elapsed_ms(started_at),
+                    "error": _truncate_text(str(e), 320),
+                    "prompt_preview": _message_preview(messages),
+                })
             if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
                 if attempt < 2:
                     time.sleep(60)
@@ -541,9 +866,9 @@ def _llm_call(messages: list):
                 raise
 
 
-def _llm_json(prompt: str) -> dict:
-    response = _llm_call([HumanMessage(content=prompt)])
-    text = response.content.strip()
+def _llm_json(prompt: str, call_name: str = "llm_json") -> dict:
+    response = _llm_call([HumanMessage(content=prompt)], call_name=call_name)
+    text = _response_text(response).strip()
     text = re.sub(r"^```(?:json)?\n?", "", text)
     text = re.sub(r"\n?```$", "", text)
     return json.loads(text)
@@ -569,7 +894,7 @@ Intent definitions:
 Entities: extract specific method, concept, dataset, author, or topic names.
 Return maximum 5 entities, normalized to lowercase."""
 
-    result = _llm_json(prompt)
+    result = _llm_json(prompt, call_name="node_query_analyzer")
     return {
         "intent":          result.get("intent", "conceptual"),
         "entities":        result.get("entities", []),
@@ -606,8 +931,8 @@ Rules:
 - Return clean column names
 - Output ONLY the raw Cypher, no explanation, no markdown fences"""
 
-    response = _llm_call([HumanMessage(content=prompt)])
-    cypher = response.content.strip().strip("```").strip()
+    response = _llm_call([HumanMessage(content=prompt)], call_name="node_cypher_generator")
+    cypher = _response_text(response).strip().strip("```").strip()
     if cypher.lower().startswith("cypher"):
         cypher = cypher[6:].strip()
     return {"cypher": cypher}
@@ -762,8 +1087,11 @@ Context:
 
 Answer:"""
 
-    response = _llm_call([SystemMessage(content=system), HumanMessage(content=user_prompt)])
-    answer = response.content.strip()
+    response = _llm_call(
+        [SystemMessage(content=system), HumanMessage(content=user_prompt)],
+        call_name="node_answer_generator",
+    )
+    answer = _response_text(response).strip()
     return {"answer": answer, "messages": [AIMessage(content=answer)]}
 
 
@@ -786,15 +1114,15 @@ def route_result_checker(state: AgentState) -> Literal["node_cypher_generator", 
 
 def build_agent():
     g = StateGraph(AgentState)
-    g.add_node("node_query_analyzer",          node_query_analyzer)
-    g.add_node("node_cypher_generator",        node_cypher_generator)
-    g.add_node("node_cypher_checker",          node_cypher_checker)
-    g.add_node("node_graph_retriever",         node_graph_retriever)
-    g.add_node("node_result_checker",          node_result_checker)
-    g.add_node("node_vector_retriever",        node_vector_retriever)
-    g.add_node("node_global_vector_retriever", node_global_vector_retriever)
-    g.add_node("node_context_builder",         node_context_builder)
-    g.add_node("node_answer_generator",        node_answer_generator)
+    g.add_node("node_query_analyzer",          _instrument_node("node_query_analyzer", node_query_analyzer))
+    g.add_node("node_cypher_generator",        _instrument_node("node_cypher_generator", node_cypher_generator))
+    g.add_node("node_cypher_checker",          _instrument_node("node_cypher_checker", node_cypher_checker))
+    g.add_node("node_graph_retriever",         _instrument_node("node_graph_retriever", node_graph_retriever))
+    g.add_node("node_result_checker",          _instrument_node("node_result_checker", node_result_checker))
+    g.add_node("node_vector_retriever",        _instrument_node("node_vector_retriever", node_vector_retriever))
+    g.add_node("node_global_vector_retriever", _instrument_node("node_global_vector_retriever", node_global_vector_retriever))
+    g.add_node("node_context_builder",         _instrument_node("node_context_builder", node_context_builder))
+    g.add_node("node_answer_generator",        _instrument_node("node_answer_generator", node_answer_generator))
 
     g.set_entry_point("node_query_analyzer")
     g.add_edge("node_query_analyzer",   "node_cypher_generator")
@@ -893,23 +1221,38 @@ def run_ingestion(session_id: str, topic: str, max_papers: int):
     sess["status"] = "ingesting"
     sess["log"]    = []
     sess["papers"] = []
+    sess["ingested_papers"] = []
+    sess["failed_papers"] = []
+    sess["error"] = None
+    _ensure_observations(sess)
+    ingest_started_at = time.perf_counter()
 
     def log(msg: str):
         sess["log"].append(msg)
 
     try:
+        _append_ingestion_event(sess, "ingestion_started", status="running", details={
+            "topic": topic,
+            "max_papers": max_papers,
+        })
+
         # 1. Clear DB
         log("🗑️  Clearing database...")
+        clear_started = time.perf_counter()
         clear_database()
+        _append_ingestion_event(sess, "clear_database", latency_ms=_elapsed_ms(clear_started))
         log("✅ Database cleared")
 
         # 2. Setup schema
         log("🔧 Setting up schema...")
+        schema_started = time.perf_counter()
         setup_schema()
+        _append_ingestion_event(sess, "setup_schema", latency_ms=_elapsed_ms(schema_started))
         log("✅ Schema ready")
 
         # 3. Fetch papers
         log(f"🔍 Searching ArXiv for: {topic}")
+        fetch_started = time.perf_counter()
         arxiv_client = arxiv.Client()
         search = arxiv.Search(query=topic, max_results=max_papers, sort_by=arxiv.SortCriterion.Relevance)
         papers = []
@@ -927,45 +1270,155 @@ def run_ingestion(session_id: str, topic: str, max_papers: int):
             })
             log(f"📄 Found: {result.title[:70]}")
 
+        _append_ingestion_event(sess, "fetch_arxiv_results", latency_ms=_elapsed_ms(fetch_started), details={
+            "paper_count": len(papers),
+        })
         log(f"✅ Fetched {len(papers)} paper(s)")
         sess["papers"] = papers
 
         # 4. Process each paper
         for i, paper in enumerate(papers, 1):
+            paper_started = time.perf_counter()
             log(f"\n📖 [{i}/{len(papers)}] Processing: {paper['title'][:60]}...")
 
-            log("   🤖 Extracting entities with Gemini...")
-            extraction = extract_entities(paper)
-            log(f"   ✅ Concepts: {len(extraction.concepts_introduced)+len(extraction.concepts_applied)} | "
-                f"Methods: {len(extraction.methods)} | Topics: {len(extraction.topics)}")
-
-            log("   📥 Downloading PDF...")
             try:
-                resp = requests.get(paper["pdf_url"], timeout=30, headers={"User-Agent": "PaperGraph/2.0"})
-                resp.raise_for_status()
-                sections, cited_refs = parse_sections(resp.content)
-                log(f"   ✅ Sections: {len(sections)} | Citations: {len(cited_refs)}")
-            except Exception as e:
-                log(f"   ⚠️  PDF failed ({e}), continuing without sections")
-                sections, cited_refs = [], []
+                log("   🤖 Extracting entities with Gemini...")
+                extract_started = time.perf_counter()
+                extraction = extract_entities(paper)
+                _append_ingestion_event(sess, "extract_entities", latency_ms=_elapsed_ms(extract_started), details={
+                    "paper_id": paper["arxiv_id"],
+                    "concepts": len(extraction.concepts_introduced) + len(extraction.concepts_applied),
+                    "methods": len(extraction.methods),
+                    "datasets": len(extraction.datasets),
+                    "topics": len(extraction.topics),
+                    "sample_methods": [m.name for m in extraction.methods[:3]],
+                })
 
-            log("   💾 Writing to Neo4j...")
-            ingest_paper(paper, extraction, sections, cited_refs)
-            log(f"   ✅ Done: {paper['arxiv_id']}")
+                log(f"   ✅ Concepts: {len(extraction.concepts_introduced)+len(extraction.concepts_applied)} | "
+                    f"Methods: {len(extraction.methods)} | Topics: {len(extraction.topics)}")
+
+                log("   📥 Downloading PDF...")
+                pdf_started = time.perf_counter()
+                try:
+                    resp = requests.get(paper["pdf_url"], timeout=30, headers={"User-Agent": "PaperGraph/2.0"})
+                    resp.raise_for_status()
+                    sections, cited_refs = parse_sections(resp.content)
+                    _append_ingestion_event(sess, "parse_pdf_sections", latency_ms=_elapsed_ms(pdf_started), details={
+                        "paper_id": paper["arxiv_id"],
+                        "sections": len(sections),
+                        "citations": len(cited_refs),
+                    })
+                    log(f"   ✅ Sections: {len(sections)} | Citations: {len(cited_refs)}")
+                except Exception as e:
+                    log(f"   ⚠️  PDF failed ({e}), continuing without sections")
+                    _append_ingestion_event(sess, "parse_pdf_sections", status="error", latency_ms=_elapsed_ms(pdf_started), details={
+                        "paper_id": paper["arxiv_id"],
+                        "error": _truncate_text(str(e), 280),
+                    })
+                    sections, cited_refs = [], []
+
+                log("   💾 Writing to Neo4j...")
+                write_started = time.perf_counter()
+                ingest_paper(paper, extraction, sections, cited_refs)
+                _append_ingestion_event(sess, "write_to_neo4j", latency_ms=_elapsed_ms(write_started), details={
+                    "paper_id": paper["arxiv_id"],
+                    "sections_written": len(sections),
+                })
+
+                sess["ingested_papers"].append({
+                    "arxiv_id": paper["arxiv_id"],
+                    "title": paper["title"],
+                    "year": paper["year"],
+                })
+                log(f"   ✅ Done: {paper['arxiv_id']}")
+
+                _append_ingestion_event(sess, "paper_completed", latency_ms=_elapsed_ms(paper_started), details={
+                    "paper_id": paper["arxiv_id"],
+                    "title": _truncate_text(paper["title"], 120),
+                })
+
+            except Exception as paper_error:
+                err_msg = _truncate_text(str(paper_error), 320)
+                sess["failed_papers"].append({
+                    "arxiv_id": paper["arxiv_id"],
+                    "title": paper["title"],
+                    "year": paper["year"],
+                    "error": err_msg,
+                })
+                _append_ingestion_event(sess, "paper_failed", status="error", latency_ms=_elapsed_ms(paper_started), details={
+                    "paper_id": paper["arxiv_id"],
+                    "title": _truncate_text(paper["title"], 120),
+                    "error": err_msg,
+                })
+                log(f"   ❌ Failed: {paper['arxiv_id']} ({err_msg})")
+                continue
 
             time.sleep(2)
 
-        # 5. Build agent
+        ingested_count = len(sess["ingested_papers"])
+        failed_count = len(sess["failed_papers"])
+
+        if ingested_count == 0:
+            sess["status"] = "error"
+            sess["error"] = "No papers were ingested successfully. Check logs/observation for details."
+            _append_ingestion_event(sess, "ingestion_failed", status="error", latency_ms=_elapsed_ms(ingest_started_at), details={
+                "papers_fetched": len(papers),
+                "papers_ingested": ingested_count,
+                "papers_failed": failed_count,
+            })
+            log(f"❌ {sess['error']}")
+            return
+
+        # 5. Build agent (if at least one paper ingested)
         log("\n🤖 Building RAG agent...")
-        sess["agent"]     = build_agent()
-        sess["thread_id"] = f"session_{session_id}"
-        sess["messages"]  = []
-        sess["status"]    = "ready"
-        log("🎉 Ingestion complete! You can now ask questions.")
+        agent_started = time.perf_counter()
+        chat_ready = False
+        try:
+            sess["agent"] = build_agent()
+            sess["thread_id"] = f"session_{session_id}"
+            sess["messages"] = []
+            chat_ready = True
+            _append_ingestion_event(sess, "build_rag_agent", latency_ms=_elapsed_ms(agent_started))
+        except Exception as build_error:
+            build_err_msg = _truncate_text(str(build_error), 320)
+            sess["agent"] = None
+            sess["thread_id"] = None
+            sess["messages"] = []
+            _append_ingestion_event(sess, "build_rag_agent", status="error", latency_ms=_elapsed_ms(agent_started), details={
+                "error": build_err_msg,
+            })
+            log(f"⚠️ Agent build failed ({build_err_msg}). Graph will still be available.")
+
+        if failed_count > 0 or not chat_ready:
+            sess["status"] = "ready_with_errors"
+            issue_bits = [f"ingested {ingested_count}/{len(papers)} papers"]
+            if failed_count > 0:
+                issue_bits.append(f"{failed_count} failed")
+            if not chat_ready:
+                issue_bits.append("chat unavailable")
+            sess["error"] = "Partial ingestion: " + ", ".join(issue_bits) + "."
+            _append_ingestion_event(sess, "ingestion_completed_with_errors", status="error", latency_ms=_elapsed_ms(ingest_started_at), details={
+                "papers_fetched": len(papers),
+                "papers_ingested": ingested_count,
+                "papers_failed": failed_count,
+                "chat_ready": chat_ready,
+            })
+            log(f"⚠️ {sess['error']}")
+        else:
+            sess["status"] = "ready"
+            sess["error"] = None
+            _append_ingestion_event(sess, "ingestion_completed", latency_ms=_elapsed_ms(ingest_started_at), details={
+                "papers_fetched": len(papers),
+                "papers_ingested": ingested_count,
+            })
+            log("🎉 Ingestion complete! You can now ask questions.")
 
     except Exception as e:
         sess["status"] = "error"
         sess["error"]  = str(e)
+        _append_ingestion_event(sess, "ingestion_failed", status="error", latency_ms=_elapsed_ms(ingest_started_at), details={
+            "error": _truncate_text(str(e), 420),
+        })
         log(f"❌ Error: {e}")
 
 
@@ -993,10 +1446,14 @@ async def new_session(req: IngestRequest, background_tasks: BackgroundTasks):
         "topic":     req.topic,
         "log":       [],
         "papers":    [],
+        "ingested_papers": [],
+        "failed_papers": [],
         "agent":     None,
         "thread_id": None,
         "messages":  [],
+        "error":     None,
     }
+    _ensure_observations(sessions[session_id])
     background_tasks.add_task(run_ingestion, session_id, req.topic, min(req.max_papers, MAX_PAPERS))
     return {"session_id": session_id}
 
@@ -1011,6 +1468,9 @@ async def session_status(session_id: str):
         "log":     sess["log"],
         "papers":  [{"arxiv_id": p["arxiv_id"], "title": p["title"], "year": p["year"]}
                     for p in sess.get("papers", [])],
+        "ingested_papers": sess.get("ingested_papers", []),
+        "failed_papers": sess.get("failed_papers", []),
+        "chat_ready": bool(sess.get("agent")),
         "error":   sess.get("error"),
     }
 
@@ -1020,8 +1480,10 @@ async def session_graph(session_id: str):
     sess = sessions.get(session_id)
     if not sess:
         raise HTTPException(404, "Session not found")
-    if sess["status"] != "ready":
+    if sess.get("status") in {"pending", "ingesting"}:
         raise HTTPException(400, "Ingestion not complete")
+    if len(sess.get("ingested_papers", [])) == 0:
+        raise HTTPException(400, "No successfully ingested papers available")
     return get_graph_data()
 
 
@@ -1034,15 +1496,39 @@ async def chat(session_id: str, req: ChatRequest):
     sess = sessions.get(session_id)
     if not sess:
         raise HTTPException(404, "Session not found")
-    if sess["status"] != "ready":
+    if sess.get("status") in {"pending", "ingesting"}:
         raise HTTPException(400, "Ingestion not complete")
+    if not sess.get("agent"):
+        raise HTTPException(400, "Chat is unavailable for this session (agent was not built).")
 
     agent     = sess["agent"]
     thread_id = sess["thread_id"]
+    chat_started = time.perf_counter()
+    turn_id = _start_chat_turn(sess, req.query)
 
     config = {"configurable": {"thread_id": thread_id}}
-    result = agent.invoke({"query": req.query, "messages": []}, config=config)
-    answer = result["answer"]
+    obs_token = OBS_CONTEXT.set({"session_id": session_id, "turn_id": turn_id})
+    try:
+        result = agent.invoke({"query": req.query, "messages": []}, config=config)
+        answer = result["answer"]
+        _complete_chat_turn(
+            session_id,
+            turn_id,
+            status="ok",
+            answer=answer,
+            latency_ms=_elapsed_ms(chat_started),
+        )
+    except Exception as e:
+        _complete_chat_turn(
+            session_id,
+            turn_id,
+            status="error",
+            error=str(e),
+            latency_ms=_elapsed_ms(chat_started),
+        )
+        raise HTTPException(500, f"Chat failed: {e}")
+    finally:
+        OBS_CONTEXT.reset(obs_token)
 
     sess["messages"].append({"role": "user",      "content": req.query})
     sess["messages"].append({"role": "assistant", "content": answer})
@@ -1056,6 +1542,22 @@ async def get_messages(session_id: str):
     if not sess:
         raise HTTPException(404, "Session not found")
     return {"messages": sess.get("messages", [])}
+
+
+@app.get("/api/session/{session_id}/observations")
+async def get_observations(session_id: str):
+    sess = sessions.get(session_id)
+    if not sess:
+        raise HTTPException(404, "Session not found")
+
+    obs = _ensure_observations(sess)
+    return {
+        "status": sess.get("status"),
+        "meta": obs.get("meta", {}),
+        "totals": obs.get("totals", {}),
+        "ingestion_events": obs.get("ingestion_events", [])[-300:],
+        "chat_turns": obs.get("chat_turns", [])[-50:],
+    }
 
 
 # startup
