@@ -63,7 +63,7 @@ docker pull shreyaan16/papergraph:latest
 ### 3. Run the container
 
 ```bash
-docker run --name papergraph --rm -p 8000:8000 --env-file .env <dockerhub-username>/papergraph:latest
+docker run --name papergraph --rm -p 8000:8000 --env-file .env shreyaan16/papergraph:latest
 ```
 
 Then open:
