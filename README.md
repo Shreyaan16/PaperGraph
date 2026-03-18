@@ -26,8 +26,8 @@ NEO4J_DATABASE=your_database_name
 HF_TOKEN=your_huggingface_token
 LANGSMITH_API_KEY=your_langsmith_api_key
 LANGSMITH_PROJECT=papergraph
-MODEL_INPUT_COST_PER_1M_USD=0
-MODEL_OUTPUT_COST_PER_1M_USD=0
+MODEL_INPUT_COST_PER_1M_USD=0.3
+MODEL_OUTPUT_COST_PER_1M_USD=2.5
 ```
 
 `MODEL_INPUT_COST_PER_1M_USD` and `MODEL_OUTPUT_COST_PER_1M_USD` are optional and used for estimated token cost display in the Observation tab.
@@ -45,6 +45,53 @@ uv run uvicorn main:app --reload --port 8000
 ```
 
 Open http://localhost:8000
+
+## Run via Docker Hub
+
+Use this when you want to run the app directly from your published image (without local Python setup).
+
+### 1. Keep your `.env` file in the project folder
+
+Use the same variables shown in the **Environment Variables** section above.
+
+### 2. Pull your image from Docker Hub
+
+```bash
+docker pull shreyaan16/papergraph:latest
+```
+
+### 3. Run the container
+
+```bash
+docker run --name papergraph --rm -p 8000:8000 --env-file .env <dockerhub-username>/papergraph:latest
+```
+
+Then open:
+- http://localhost:8000 (UI)
+- http://localhost:8000/docs (API docs)
+
+### 4. Optional: Run in detached mode
+
+```bash
+docker run -d --name papergraph -p 8000:8000 --env-file .env shreyaan16/papergraph:latest
+docker logs -f papergraph
+```
+
+### 5. Stop / remove
+
+```bash
+docker stop papergraph
+```
+
+If you used `--rm`, the container is removed automatically after stop.
+
+### 6. Update to latest image
+
+```bash
+docker pull shreyaan16/papergraph:latest
+docker stop papergraph
+docker run --name papergraph --rm -p 8000:8000 --env-file .env shreyaan16/papergraph:latest
+```
 
 ## Usage
 
